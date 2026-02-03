@@ -1,0 +1,261 @@
+{
+  "investigation_id": "inv_noir_001",
+  "thought_signature": "TS_payment_legacy_investigation_v1",
+  "file_context": {
+    "path": "src/payments/processor.py",
+    "line_start": 142,
+    "line_end": 156,
+    "snippet": "def process_payment(amount, account_id):\n    # LEGACY: DO NOT TOUCH - Black Friday 2019 incident\n    if amount > 9999.99:\n        logger.warning(f'Legacy handler triggered for {amount}')\n        return legacy_overflow_handler(amount, account_id)\n    \n    # Normal processing path\n    return modern_processor.charge(amount, account_id)"
+  },
+  "confidence": 87,
+  "verdict": {
+    "summary": "This code is a critical safety valve installed after the infamous 'Black Friday Meltdown' of 2019. When payments exceeded $9,999.99, integer overflow in the legacy billing system caused charges to wrap around to negative values, effectively issuing refunds instead of charges. The quick fix reroutes high-value transactions to the old, battle-tested handler while the modern system was eventually patched.",
+    "action": "DOCUMENT",
+    "reasoning": "The code serves a genuine purpose and prevented approximately $2.3M in erroneous refunds during the 2019 holiday season. However, the legacy system is now deprecated (2023), and this safety valve should be converted to proper validation with monitoring. RECOMMENDATION: Keep the logic but refactor into a proper PaymentValidator class with explicit overflow checking, and add telemetry to track when it triggers."
+  },
+  "evidence": [
+    {
+      "type": "COMMIT",
+      "id": "a1b2c3d4",
+      "date": "2019-11-29T03:42:17Z",
+      "author": {
+        "name": "Sarah Chen",
+        "email": "sarah.chen@company.com",
+        "avatar": "https://avatars.githubusercontent.com/u/12345",
+        "githubUrl": "https://github.com/sarahchen"
+      },
+      "message": "HOTFIX: Route high-value payments to legacy handler\n\nProduction is on fire. Payments above $10k are being\nprocessed as REFUNDS. Rolling back isn't an option -\nthe holiday queue is 50k deep.\n\nThis routes problematic amounts to the old system\nwhile we figure out wtf happened with the new one.\n\nRef: INC-2019-1129-001",
+      "diff": "@@ -140,6 +140,12 @@ def process_payment(amount, account_id):\n+    # LEGACY: DO NOT TOUCH - Black Friday 2019 incident\n+    if amount > 9999.99:\n+        logger.warning(f'Legacy handler triggered for {amount}')\n+        return legacy_overflow_handler(amount, account_id)\n+    \n     return modern_processor.charge(amount, account_id)",
+      "relevance_score": 98
+    },
+    {
+      "type": "COMMIT", 
+      "id": "e5f6g7h8",
+      "date": "2019-11-15T14:23:00Z",
+      "author": {
+        "name": "Marcus Webb",
+        "email": "marcus.webb@company.com",
+        "avatar": "https://avatars.githubusercontent.com/u/67890",
+        "githubUrl": "https://github.com/mwebb"
+      },
+      "message": "Migrate payment processor to new decimal handling\n\nPart of Q4 modernization. The new processor uses\nDecimal instead of float for precision. Performance\nimproved by 23% in staging.\n\nCloses #1198",
+      "diff": "@@ -1,50 +1,50 @@\n-from legacy_billing import LegacyProcessor\n+from modern_billing import ModernProcessor",
+      "relevance_score": 85
+    },
+    {
+      "type": "PR",
+      "id": "#1847",
+      "url": "https://github.com/company/payments/pull/1847",
+      "title": "[EMERGENCY] Route overflow payments to legacy system",
+      "author": {
+        "name": "Sarah Chen",
+        "avatar": "https://avatars.githubusercontent.com/u/12345"
+      },
+      "created_at": "2019-11-29T03:45:00Z",
+      "merged_at": "2019-11-29T03:48:00Z",
+      "state": "merged",
+      "comments": [
+        {
+          "author": {
+            "name": "James Rodriguez",
+            "role": "VP Engineering"
+          },
+          "body": "LGTM SHIP IT NOW. We're losing $50k/minute.",
+          "timestamp": "2019-11-29T03:46:22Z"
+        },
+        {
+          "author": {
+            "name": "Marcus Webb",
+            "role": "Staff Engineer"
+          },
+          "body": "I found it. The ModernProcessor stores amount as int cents internally but the Decimal conversion truncates above MAX_INT32 / 100. The legacy system used float which didn't have this issue. I'm so sorry.",
+          "timestamp": "2019-11-29T04:12:00Z"
+        },
+        {
+          "author": {
+            "name": "Sarah Chen",
+            "role": "Principal Engineer"
+          },
+          "body": "@marcus-webb Not your fault - the staging dataset didn't have transactions above $5k. We need better test data. For now, this guard stays.",
+          "timestamp": "2019-11-29T04:15:00Z"
+        }
+      ],
+      "labels": ["emergency", "production-incident", "do-not-revert"],
+      "relevance_score": 95
+    },
+    {
+      "type": "ISSUE",
+      "id": "#1201",
+      "url": "https://github.com/company/payments/issues/1201",
+      "title": "CRITICAL: High-value payments being refunded instead of charged",
+      "author": {
+        "name": "ops-bot",
+        "avatar": null
+      },
+      "created_at": "2019-11-29T02:30:00Z",
+      "closed_at": "2019-11-29T04:00:00Z",
+      "state": "closed",
+      "body": "## Automated Incident Report\n\n**Severity:** P0 - Revenue Loss\n\n**Detection:** Payment reconciliation anomaly\n\n**Symptoms:**\n- 847 transactions above $10,000 processed as refunds\n- Estimated revenue impact: $2.3M\n- First occurrence: 2019-11-29T01:15:00Z (Black Friday peak)\n\n**Affected Systems:**\n- modern-payment-processor v2.3.1\n- billing-gateway\n\n**Customer Impact:**\n- Luxury goods orders being \"paid\" with company money\n- CS ticket volume +400%",
+      "labels": ["P0", "production", "revenue-loss", "black-friday"],
+      "relevance_score": 92
+    },
+    {
+      "type": "ISSUE",
+      "id": "#1198",
+      "url": "https://github.com/company/payments/issues/1198",
+      "title": "Modernize payment processor decimal handling",
+      "author": {
+        "name": "Marcus Webb",
+        "avatar": "https://avatars.githubusercontent.com/u/67890"
+      },
+      "created_at": "2019-10-15T10:00:00Z",
+      "closed_at": "2019-11-15T14:30:00Z",
+      "state": "closed",
+      "body": "## Proposal\n\nMigrate from float-based amount handling to proper Decimal types.\n\n**Benefits:**\n- Eliminates floating-point precision errors\n- 23% performance improvement in staging\n- Cleaner code\n\n**Risk Assessment:** Low - all tests passing",
+      "labels": ["enhancement", "tech-debt", "approved"],
+      "relevance_score": 75
+    },
+    {
+      "type": "COMMENT",
+      "id": "postmortem-note",
+      "parent_type": "PR",
+      "parent_id": "#1847",
+      "author": {
+        "name": "Sarah Chen",
+        "role": "Principal Engineer"
+      },
+      "body": "POSTMORTEM UPDATE (2020-01-15):\n\nThe root cause was identified: our new Decimal handling internally converts to integer cents (amount * 100). For amounts above $21,474,836.47 (MAX_INT32 / 100), this overflows to a negative number.\n\nThe legacy float system avoided this by never converting to int.\n\nThe proper fix (shipped in v2.4.0) validates amounts before conversion. This guard rail will remain until we're confident all edge cases are handled.\n\nTODO: Add telemetry to track trigger frequency. If zero triggers for 6 months, we can consider removal.",
+      "timestamp": "2020-01-15T11:30:00Z",
+      "relevance_score": 90
+    }
+  ],
+  "timeline": [
+    {
+      "date": "2019-10-15T10:00:00Z",
+      "event": "Issue #1198 opened: 'Modernize payment processor'",
+      "actor": "Marcus Webb",
+      "severity": "info"
+    },
+    {
+      "date": "2019-11-15T14:23:00Z",
+      "event": "Commit e5f6g7h8: Migration to modern decimal handling",
+      "actor": "Marcus Webb",
+      "severity": "info"
+    },
+    {
+      "date": "2019-11-15T14:30:00Z",
+      "event": "Issue #1198 closed",
+      "actor": "Marcus Webb",
+      "severity": "info"
+    },
+    {
+      "date": "2019-11-29T01:15:00Z",
+      "event": "First overflow incident detected (Black Friday peak)",
+      "actor": "system",
+      "severity": "critical"
+    },
+    {
+      "date": "2019-11-29T02:30:00Z",
+      "event": "CRITICAL Issue #1201 opened: Revenue loss detected",
+      "actor": "ops-bot",
+      "severity": "critical"
+    },
+    {
+      "date": "2019-11-29T03:42:17Z",
+      "event": "Commit a1b2c3d4: Emergency hotfix deployed",
+      "actor": "Sarah Chen",
+      "severity": "fix"
+    },
+    {
+      "date": "2019-11-29T03:48:00Z",
+      "event": "PR #1847 merged (3-minute review)",
+      "actor": "James Rodriguez",
+      "severity": "fix"
+    },
+    {
+      "date": "2019-11-29T04:00:00Z",
+      "event": "Issue #1201 closed: Incident resolved",
+      "actor": "Sarah Chen",
+      "severity": "info"
+    },
+    {
+      "date": "2020-01-15T11:30:00Z",
+      "event": "Postmortem published, root cause documented",
+      "actor": "Sarah Chen",
+      "severity": "info"
+    },
+    {
+      "date": "2020-03-01T09:00:00Z",
+      "event": "v2.4.0 shipped with proper validation",
+      "actor": "Marcus Webb",
+      "severity": "fix"
+    }
+  ],
+  "suspects": [
+    {
+      "author": {
+        "name": "Sarah Chen",
+        "email": "sarah.chen@company.com",
+        "avatar": "https://avatars.githubusercontent.com/u/12345",
+        "githubUrl": "https://github.com/sarahchen"
+      },
+      "role": "Principal Engineer (Payments)",
+      "commits_in_file": 47,
+      "last_active": "2023-06-15",
+      "verdict_role": "Hero - Fixed the incident at 3 AM",
+      "notes": "Architect of the payment system. 8 years at company."
+    },
+    {
+      "author": {
+        "name": "Marcus Webb", 
+        "email": "marcus.webb@company.com",
+        "avatar": "https://avatars.githubusercontent.com/u/67890",
+        "githubUrl": "https://github.com/mwebb"
+      },
+      "role": "Staff Engineer",
+      "commits_in_file": 23,
+      "last_active": "2023-08-20",
+      "verdict_role": "Unintentional trigger - introduced the bug",
+      "notes": "Good intentions, bad edge case testing. Took ownership."
+    },
+    {
+      "author": {
+        "name": "James Rodriguez",
+        "email": "james.rodriguez@company.com", 
+        "avatar": "https://avatars.githubusercontent.com/u/11111",
+        "githubUrl": "https://github.com/jrodriguez"
+      },
+      "role": "VP Engineering",
+      "commits_in_file": 0,
+      "last_active": "2023-12-01",
+      "verdict_role": "LGTM authority under pressure",
+      "notes": "Made the call to ship without full review. Right decision."
+    }
+  ],
+  "connections": [
+    {
+      "from": "a1b2c3d4",
+      "to": "#1847",
+      "type": "implements",
+      "strength": 1.0
+    },
+    {
+      "from": "#1847", 
+      "to": "#1201",
+      "type": "fixes",
+      "strength": 1.0
+    },
+    {
+      "from": "e5f6g7h8",
+      "to": "#1201",
+      "type": "caused",
+      "strength": 0.9
+    },
+    {
+      "from": "e5f6g7h8",
+      "to": "#1198",
+      "type": "implements",
+      "strength": 1.0
+    }
+  ]
+}

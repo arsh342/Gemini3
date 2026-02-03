@@ -62,7 +62,7 @@ export class LeadDetectiveAgent {
     }
   ) {
     this.genai = new GoogleGenAI({ apiKey });
-    this.model = options?.model || 'gemini-2.5-pro-preview-05-06';
+    this.model = options?.model || 'gemini-3-flash-preview';
     this.thinkingLevel = options?.thinkingLevel || 'high';
   }
 
@@ -72,31 +72,50 @@ export class LeadDetectiveAgent {
   async investigate(caseFile: CaseFile): Promise<InvestigationResult> {
     const prompt = this.buildInvestigationPrompt(caseFile);
     
-    try {
-      const response = await this.genai.models.generateContent({
-        model: this.model,
-        contents: prompt,
-        config: {
-          thinkingConfig: {
-            thinkingBudget: this.getThinkingBudget()
-          },
-          temperature: 0.3, // Lower for factual investigation
+    // Retry with exponential backoff for transient errors
+    const maxRetries = 3;
+    let lastError: any;
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const response = await this.genai.models.generateContent({
+          model: this.model,
+          contents: prompt,
+          config: {
+            thinkingConfig: {
+              thinkingBudget: this.getThinkingBudget()
+            },
+            temperature: 0.3, // Lower for factual investigation
+          }
+        });
+
+        // Extract thought signature if available
+        const thoughtSignature = this.extractThoughtSignature(response);
+        if (thoughtSignature) {
+          this.thoughtChain.signatures.push(thoughtSignature);
+          this.thoughtChain.totalSteps++;
         }
-      });
 
-      // Extract thought signature if available
-      const thoughtSignature = this.extractThoughtSignature(response);
-      if (thoughtSignature) {
-        this.thoughtChain.signatures.push(thoughtSignature);
-        this.thoughtChain.totalSteps++;
+        const text = response.text || '';
+        return this.parseInvestigationResponse(text, caseFile);
+      } catch (error: any) {
+        lastError = error;
+        const status = error?.status || error?.code;
+        
+        // Retry on 503 (overloaded) or 429 (rate limit)
+        if ((status === 503 || status === 429) && attempt < maxRetries - 1) {
+          const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+          console.log(`Model overloaded, retrying in ${delay/1000}s... (attempt ${attempt + 1}/${maxRetries})`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+        
+        console.error('Lead Detective investigation failed:', error);
+        throw new Error(`Investigation failed: ${error}`);
       }
-
-      const text = response.text || '';
-      return this.parseInvestigationResponse(text, caseFile);
-    } catch (error) {
-      console.error('Lead Detective investigation failed:', error);
-      throw new Error(`Investigation failed: ${error}`);
     }
+    
+    throw new Error(`Investigation failed after ${maxRetries} attempts: ${lastError}`);
   }
 
   /**
@@ -272,11 +291,15 @@ Based on all evidence above, provide your investigation findings following the f
     response: string,
     caseFile: CaseFile
   ): InvestigationResult {
+    // Clean markdown from response for display
+    const cleanedResponse = this.cleanMarkdown(response);
+    
     // Extract summary (first paragraph or summary section)
     const summaryMatch = response.match(/(?:summary|overview)[:\s]*([^\n]+(?:\n[^\n#]+)*)/i);
-    const summary = summaryMatch 
+    const rawSummary = summaryMatch 
       ? summaryMatch[1].trim() 
       : response.split('\n\n')[0].substring(0, 300);
+    const summary = this.cleanMarkdown(rawSummary);
 
     // Extract confidence score
     const confidenceMatch = response.match(/confidence[:\s]*(\d+)/i);
@@ -292,7 +315,7 @@ Based on all evidence above, provide your investigation findings following the f
     const timeline = this.buildTimeline(caseFile);
 
     return {
-      narrative: response,
+      narrative: cleanedResponse,
       summary,
       confidence: Math.min(100, Math.max(0, confidence)),
       sources,
@@ -538,4 +561,35 @@ Based on all evidence above, provide your investigation findings following the f
     this.thoughtChain = { signatures: [], totalSteps: 0 };
     this.stepCounter = 0;
   }
+
+  /**
+   * Clean markdown formatting from text for display
+   * Removes headers, bold, italic, code blocks, etc.
+   */
+  private cleanMarkdown(text: string): string {
+    return text
+      // Remove code blocks
+      .replace(/```[\s\S]*?```/g, '')
+      // Remove inline code
+      .replace(/`([^`]+)`/g, '$1')
+      // Remove headers (## Header -> Header)
+      .replace(/^#{1,6}\s+/gm, '')
+      // Remove bold (**text** or __text__)
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/__([^_]+)__/g, '$1')
+      // Remove italic (*text* or _text_)
+      .replace(/\*([^*]+)\*/g, '$1')
+      .replace(/_([^_]+)_/g, '$1')
+      // Remove bullet points and numbering
+      .replace(/^[\s]*[-*+]\s+/gm, '• ')
+      .replace(/^[\s]*\d+\.\s+/gm, '')
+      // Remove horizontal rules
+      .replace(/^[-*_]{3,}$/gm, '')
+      // Remove links but keep text [text](url) -> text
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      // Clean up extra whitespace
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
 }
+

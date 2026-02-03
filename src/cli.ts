@@ -163,6 +163,276 @@ program
     }
   });
 
+// ============================================
+// MARATHON AGENT COMMANDS
+// ============================================
+
+program
+  .command('deep-dive')
+  .description('Autonomous deep dive - explores dependencies and builds complete case')
+  .argument('<file>', 'Path to the file to start from')
+  .option('-l, --line <number>', 'Line number to focus on', '1')
+  .option('-d, --depth <number>', 'Max dependency depth to explore', '3')
+  .option('-m, --max-files <number>', 'Max files to explore', '10')
+  .option('--verify', 'Enable self-verification loop')
+  .option('-o, --output <file>', 'Output markdown file')
+  .action(async (file: string, options: any) => {
+    const spinner = ora('Starting autonomous deep dive...').start();
+    
+    try {
+      const geminiApiKey = process.env.GEMINI_API_KEY;
+      if (!geminiApiKey) {
+        spinner.fail('GEMINI_API_KEY not found');
+        process.exit(1);
+      }
+
+      const { DeepDiveAgent } = await import('./agents/deepDive');
+      
+      const filePath = path.resolve(file);
+      const repoPath = findRepoRoot(filePath);
+      if (!repoPath) {
+        spinner.fail('Not in a git repository');
+        process.exit(1);
+      }
+
+      const fileContent = fs.readFileSync(filePath, 'utf-8');
+      const lines = fileContent.split('\n');
+      const startLine = parseInt(options.line, 10);
+
+      const agent = new DeepDiveAgent({
+        geminiApiKey,
+        githubToken: process.env.GITHUB_TOKEN,
+        maxDepth: parseInt(options.depth, 10),
+        maxFilesToExplore: parseInt(options.maxFiles, 10),
+        verifyFindings: options.verify,
+        onProgress: (update) => {
+          const status = update.verificationStatus 
+            ? chalk.cyan(`[${update.verificationStatus.toUpperCase()}]`)
+            : '';
+          spinner.text = `${update.message} ${status} (${update.filesExplored}/${update.totalFiles} files)`;
+        }
+      });
+
+      const result = await agent.deepDive(
+        {
+          text: lines.slice(startLine - 1, startLine + 10).join('\n'),
+          filePath: path.relative(repoPath, filePath),
+          lineStart: startLine,
+          lineEnd: startLine + 10,
+          repoPath
+        },
+        repoPath
+      );
+
+      spinner.succeed(`Deep dive complete! Explored ${result.totalFilesExplored} files in ${(result.totalTimeMs / 1000).toFixed(1)}s`);
+      
+      console.log('');
+      console.log(chalk.bold.blue('═══════════════════════════════════════'));
+      console.log(chalk.bold.blue('      AUTONOMOUS DEEP DIVE REPORT      '));
+      console.log(chalk.bold.blue('═══════════════════════════════════════'));
+      console.log('');
+      
+      console.log(chalk.bold('📊 Stats'));
+      console.log(`  Files explored: ${result.totalFilesExplored}`);
+      console.log(`  Time: ${(result.totalTimeMs / 1000).toFixed(1)}s`);
+      console.log(`  Thought chain length: ${result.thoughtChainLength}`);
+      console.log('');
+      
+      console.log(chalk.bold('🎯 Main Investigation'));
+      console.log(`  Confidence: ${result.mainInvestigation.confidence}%`);
+      console.log(`  Summary: ${result.mainInvestigation.summary}`);
+      console.log('');
+
+      if (result.verificationReport.linksChecked.length > 0) {
+        console.log(chalk.bold('✅ Verification'));
+        console.log(`  Claims verified: ${result.verificationReport.claimsVerified}`);
+        console.log(`  Claims failed: ${result.verificationReport.claimsFailed}`);
+        console.log(`  Adjusted confidence: ${result.verificationReport.overallConfidence}%`);
+      }
+
+      if (options.output) {
+        let report = `# Deep Dive Report\n\n`;
+        report += `**Files Explored:** ${result.totalFilesExplored}\n`;
+        report += `**Time:** ${(result.totalTimeMs / 1000).toFixed(1)}s\n\n`;
+        report += `## Main Investigation\n\n${result.mainInvestigation.narrative}\n\n`;
+        
+        if (result.relatedInvestigations.size > 0) {
+          report += `## Related Files\n\n`;
+          for (const [file, inv] of result.relatedInvestigations) {
+            report += `### ${file}\n${inv.summary}\n\n`;
+          }
+        }
+        
+        fs.writeFileSync(options.output, report);
+        console.log(chalk.green(`\n✓ Report saved to ${options.output}`));
+      }
+
+    } catch (error) {
+      spinner.fail('Deep dive failed');
+      console.error(chalk.red(`Error: ${error}`));
+      process.exit(1);
+    }
+  });
+
+program
+  .command('watch')
+  .description('Watch mode - continuously monitor repository for new commits')
+  .argument('[path]', 'Path to repository to watch', '.')
+  .option('-i, --interval <ms>', 'Poll interval in milliseconds', '30000')
+  .option('--investigate', 'Automatically investigate new commits')
+  .option('--detect-suspicious', 'Detect suspicious patterns in changes')
+  .action(async (repoPath: string, options: any) => {
+    const geminiApiKey = process.env.GEMINI_API_KEY;
+    if (!geminiApiKey) {
+      console.error(chalk.red('GEMINI_API_KEY not found'));
+      process.exit(1);
+    }
+
+    const { WatchModeAgent } = await import('./agents/watchMode');
+    
+    const fullPath = path.resolve(repoPath);
+    if (!fs.existsSync(path.join(fullPath, '.git'))) {
+      console.error(chalk.red('Not a git repository'));
+      process.exit(1);
+    }
+
+    console.log(chalk.bold.blue('\n🔍 THE REPO ARCHAEOLOGIST - WATCH MODE\n'));
+    
+    const agent = new WatchModeAgent(fullPath, {
+      geminiApiKey,
+      githubToken: process.env.GITHUB_TOKEN,
+      pollIntervalMs: parseInt(options.interval, 10),
+      investigateNewCommits: options.investigate,
+      investigateSuspiciousPatterns: options.detectSuspicious,
+      onNewCommit: (commit) => {
+        console.log(chalk.green(`\n📝 New commit: ${commit.hash.substring(0, 7)}`));
+        console.log(chalk.gray(`   ${commit.author}: ${commit.message.substring(0, 60)}`));
+      },
+      onSuspiciousChange: (alert) => {
+        const colors = { low: chalk.yellow, medium: chalk.magenta, high: chalk.red };
+        console.log(colors[alert.severity](`⚠️  ${alert.description}`));
+        console.log(chalk.gray(`   ${alert.file}:${alert.line}`));
+      },
+      onInvestigationComplete: (result) => {
+        console.log(chalk.cyan(`✅ Investigation: ${result.investigation.confidence}% confidence`));
+        console.log(chalk.gray(`   ${result.investigation.summary.substring(0, 100)}...`));
+      }
+    });
+
+    // Handle Ctrl+C
+    process.on('SIGINT', () => {
+      console.log(chalk.yellow('\n\nStopping watch mode...'));
+      agent.stop();
+      
+      const history = agent.getHistory();
+      if (history.length > 0) {
+        console.log(chalk.bold('\n📊 Session Summary'));
+        console.log(`  Investigations completed: ${history.length}`);
+        
+        const report = agent.generateReport();
+        const reportPath = 'watch-report.md';
+        fs.writeFileSync(reportPath, report);
+        console.log(chalk.green(`  Report saved to: ${reportPath}`));
+      }
+      
+      process.exit(0);
+    });
+
+    await agent.start();
+    console.log(chalk.gray('\nPress Ctrl+C to stop watching\n'));
+  });
+
+// ============================================
+// CONFLICT RESOLVER COMMAND
+// ============================================
+
+program
+  .command('resolve-conflicts')
+  .description('Auto-resolve git merge conflicts using AI analysis')
+  .argument('[path]', 'Path to repository', '.')
+  .option('--apply', 'Automatically apply high-confidence resolutions')
+  .option('--preview', 'Preview resolutions without applying')
+  .option('-o, --output <file>', 'Save resolution report to file')
+  .action(async (repoPath: string, options: any) => {
+    const spinner = ora('Scanning for merge conflicts...').start();
+    
+    try {
+      const geminiApiKey = process.env.GEMINI_API_KEY;
+      if (!geminiApiKey) {
+        spinner.fail('GEMINI_API_KEY not found');
+        process.exit(1);
+      }
+
+      const { ConflictResolverAgent } = await import('./agents/conflictResolver');
+      
+      const fullPath = path.resolve(repoPath);
+      if (!fs.existsSync(path.join(fullPath, '.git'))) {
+        spinner.fail('Not a git repository');
+        process.exit(1);
+      }
+
+      const resolver = new ConflictResolverAgent(fullPath, {
+        geminiApiKey,
+        autoApply: options.apply && !options.preview,
+        onProgress: (update) => {
+          const stats = update.conflictsFound 
+            ? `(${update.conflictsResolved || 0}/${update.conflictsFound})`
+            : '';
+          spinner.text = `${update.message} ${stats}`;
+        },
+        onResolved: (result) => {
+          const statusIcon = result.confidence >= 70 ? '✅' : '⚠️';
+          console.log(`\n${statusIcon} ${result.conflict.file}:${result.conflict.startLine}`);
+          console.log(chalk.gray(`   Strategy: ${result.strategy} | Confidence: ${result.confidence}%`));
+          console.log(chalk.gray(`   ${result.reasoning.substring(0, 80)}...`));
+        }
+      });
+
+      const report = options.preview 
+        ? await resolver.preview()
+        : await resolver.resolveAll();
+
+      spinner.succeed(`Processed ${report.totalConflicts} conflicts`);
+
+      console.log('');
+      console.log(chalk.bold.blue('═══════════════════════════════════════'));
+      console.log(chalk.bold.blue('     CONFLICT RESOLUTION REPORT        '));
+      console.log(chalk.bold.blue('═══════════════════════════════════════'));
+      console.log('');
+      
+      console.log(chalk.bold('📊 Summary'));
+      console.log(`  Total conflicts: ${report.totalConflicts}`);
+      console.log(`  Resolved: ${chalk.green(report.resolved.toString())}`);
+      console.log(`  Failed: ${chalk.red(report.failed.toString())}`);
+      console.log('');
+
+      if (report.resolutions.length > 0) {
+        console.log(chalk.bold('📝 Resolutions'));
+        for (const res of report.resolutions) {
+          const applied = res.appliedAt ? chalk.green('APPLIED') : chalk.yellow('PENDING');
+          const confColor = res.confidence >= 70 ? chalk.green : res.confidence >= 40 ? chalk.yellow : chalk.red;
+          console.log(`  ${res.conflict.file}:${res.conflict.startLine}`);
+          console.log(`    Strategy: ${res.strategy} | Confidence: ${confColor(res.confidence + '%')} | ${applied}`);
+        }
+      }
+
+      if (options.output) {
+        const reportMd = resolver.generateReport(report);
+        fs.writeFileSync(options.output, reportMd);
+        console.log(chalk.green(`\n✓ Report saved to ${options.output}`));
+      }
+
+      if (!options.apply && report.resolutions.some(r => !r.appliedAt)) {
+        console.log(chalk.yellow('\n💡 Run with --apply to automatically apply high-confidence resolutions'));
+      }
+
+    } catch (error) {
+      spinner.fail('Conflict resolution failed');
+      console.error(chalk.red(`Error: ${error}`));
+      process.exit(1);
+    }
+  });
+
 program.parse();
 
 // ============================================

@@ -13,11 +13,58 @@
   "activationEvents": [],
   "main": "./dist/extension/extension.js",
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "repoArchaeologist",
+          "title": "Repo Archaeologist",
+          "icon": "$(book)"
+        }
+      ]
+    },
+    "views": {
+      "repoArchaeologist": [
+        {
+          "id": "repoArchaeologist.actions",
+          "name": "Actions",
+          "type": "webview"
+        },
+        {
+          "id": "repoArchaeologist.history",
+          "name": "Investigation History"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "repoArchaeologist.investigate",
-        "title": "Investigate Code",
-        "category": "Repo Archaeologist"
+        "title": "Investigate Code - Why does this exist?",
+        "category": "Repo Archaeologist",
+        "icon": "$(search)"
+      },
+      {
+        "command": "repoArchaeologist.deepDive",
+        "title": "Deep Dive - Autonomous Investigation",
+        "category": "Repo Archaeologist",
+        "icon": "$(telescope)"
+      },
+      {
+        "command": "repoArchaeologist.resolveConflicts",
+        "title": "Resolve Merge Conflicts (AI)",
+        "category": "Repo Archaeologist",
+        "icon": "$(git-merge)"
+      },
+      {
+        "command": "repoArchaeologist.watchMode",
+        "title": "Start Watch Mode",
+        "category": "Repo Archaeologist",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "repoArchaeologist.blame",
+        "title": "Quick Blame Lookup",
+        "category": "Repo Archaeologist",
+        "icon": "$(git-commit)"
       }
     ],
     "menus": {
@@ -25,7 +72,43 @@
         {
           "command": "repoArchaeologist.investigate",
           "when": "editorHasSelection",
-          "group": "navigation"
+          "group": "navigation@1"
+        },
+        {
+          "command": "repoArchaeologist.deepDive",
+          "when": "editorHasSelection",
+          "group": "navigation@2"
+        },
+        {
+          "command": "repoArchaeologist.blame",
+          "group": "navigation@3"
+        }
+      ],
+      "scm/resourceState/context": [
+        {
+          "command": "repoArchaeologist.resolveConflicts",
+          "when": "scmResourceState == conflict",
+          "group": "inline"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "repoArchaeologist.investigate",
+          "when": "editorIsOpen"
+        },
+        {
+          "command": "repoArchaeologist.deepDive",
+          "when": "editorIsOpen"
+        },
+        {
+          "command": "repoArchaeologist.resolveConflicts"
+        },
+        {
+          "command": "repoArchaeologist.watchMode"
+        },
+        {
+          "command": "repoArchaeologist.blame",
+          "when": "editorIsOpen"
         }
       ]
     },
@@ -47,6 +130,11 @@
           "enum": ["low", "medium", "high"],
           "default": "high",
           "description": "Gemini 3 thinking depth level"
+        },
+        "repoArchaeologist.autoApplyConflicts": {
+          "type": "boolean",
+          "default": false,
+          "description": "Auto-apply high-confidence conflict resolutions"
         }
       }
     }
