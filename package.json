@@ -1,0 +1,93 @@
+{
+  "name": "repo-archaeologist",
+  "displayName": "The Repo Archaeologist",
+  "description": "Git blame tells you WHO. We tell you WHY. An AI-powered code archaeology tool using Gemini 3.",
+  "version": "0.1.0",
+  "publisher": "repo-archaeologist",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "repoArchaeologist.investigate",
+        "title": "Investigate Code",
+        "category": "Repo Archaeologist"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "repoArchaeologist.investigate",
+          "when": "editorHasSelection",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Repo Archaeologist",
+      "properties": {
+        "repoArchaeologist.geminiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Your Gemini API key"
+        },
+        "repoArchaeologist.githubToken": {
+          "type": "string",
+          "default": "",
+          "description": "GitHub Personal Access Token for PR/Issue lookup"
+        },
+        "repoArchaeologist.thinkingLevel": {
+          "type": "string",
+          "enum": ["low", "medium", "high"],
+          "default": "high",
+          "description": "Gemini 3 thinking depth level"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "build": "npm run compile && npm run build:webview",
+    "build:webview": "esbuild src/extension/webview/index.tsx --bundle --outfile=dist/webview/main.js --format=iife --platform=browser --loader:.tsx=tsx",
+    "package": "vsce package",
+    "test": "jest",
+    "test:integration": "jest --config jest.integration.config.js",
+    "cli": "ts-node src/cli.ts",
+    "lint": "eslint src --ext ts,tsx"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.11",
+    "@types/node": "^20.10.0",
+    "@types/react": "^18.2.45",
+    "@types/react-dom": "^18.2.18",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.15.0",
+    "@typescript-eslint/parser": "^6.15.0",
+    "@vscode/vsce": "^2.22.0",
+    "esbuild": "^0.19.10",
+    "eslint": "^8.56.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "@google/genai": "^1.0.0",
+    "@octokit/rest": "^20.0.2",
+    "chalk": "^5.3.0",
+    "commander": "^11.1.0",
+    "dotenv": "^16.3.1",
+    "ora": "^8.0.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "simple-git": "^3.21.0"
+  }
+}
