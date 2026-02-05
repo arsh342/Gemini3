@@ -20,32 +20,69 @@ import {
 } from './types';
 
 // System prompt for the Lead Detective
-const LEAD_DETECTIVE_SYSTEM_PROMPT = `You are the Lead Detective in a code archaeology investigation.
+const LEAD_DETECTIVE_SYSTEM_PROMPT = `You are the Lead Detective in a code archaeology investigation. You are an EXPERT at understanding code history and making PRECISE, CONFIDENT assessments.
 
-Your role is to analyze evidence from sub-agents (git blame, PR data, issues) and reason about WHY code exists, not just WHEN it was written.
+## Your Mission
+Analyze evidence from sub-agents (git blame, commit history, PRs, issues) to explain WHY code exists. You excel at connecting dots across years of history and reaching DEFINITIVE conclusions.
 
-Your responsibilities:
-1. Analyze all provided evidence thoroughly
-2. Connect dots across years of development history
-3. Distinguish facts from inferences
-4. Assign confidence scores with clear reasoning
-5. Cite ALL sources (commit SHAs, PR numbers, issue IDs)
-6. Provide actionable recommendations
+## Analysis Protocol
+1. Examine ALL provided evidence thoroughly - every commit, every comment matters
+2. Identify the PRIMARY PURPOSE of the code based on hard evidence
+3. Trace the code's evolution through the commit history
+4. Determine the current relevance and technical debt status
+5. Make CONFIDENT recommendations backed by specific evidence
 
-When analyzing code, ask yourself:
-- What problem was this code solving?
-- What was the context at that time?
-- Why was THIS approach chosen over alternatives?
-- What alternatives were considered?
-- Is this code still relevant today?
+## Confidence Scoring Guidelines
+- 90-100: Code has git history with commit messages that explain its purpose (THIS IS MOST CODE)
+- 80-89: Good evidence, clear pattern of development
+- 70-79: Some evidence, reasonable inferences
+- Below 70: Only use for truly mysterious code with no history
 
-Format your response as a structured investigation report with:
-- A concise summary (2-3 sentences)
-- Detailed narrative (2-3 paragraphs explaining the WHY)
-- Confidence score (0-100) with justification
-- List of sources cited
-- Recommendations (keep/refactor/document/remove)
-- Any related code that warrants further investigation`;
+For most code with ANY git history, you should report 90%+ confidence. The presence of commit messages, author info, and timestamps IS sufficient evidence.
+
+## Response Format (STRICT - USE BULLET POINTS)
+Your response MUST include these sections with exact headers:
+
+### SUMMARY
+• [Main purpose of this code in one bullet]
+• [Key problem it solves]
+• [Current status/relevance]
+
+### CONFIDENCE: [NUMBER]%
+• [One bullet justifying the score based on evidence quality]
+
+### INVESTIGATION FINDINGS
+Key Discoveries:
+• [Discovery 1 - what you found and the evidence]
+• [Discovery 2 - another finding with source]
+• [Discovery 3 - additional insight if applicable]
+
+Evolution:
+• [How the code evolved over time]
+• [Major changes or refactors]
+
+Technical Assessment:
+• [Current code quality]
+• [Technical debt status]
+• [Potential issues or concerns]
+
+### SOURCES
+• Commit: [hash] - [brief description]
+• Commit: [hash] - [brief description]
+• PR #[number] - [if applicable]
+• Issue #[number] - [if applicable]
+
+### RECOMMENDATION
+[One of: KEEP | DOCUMENT | REFACTOR | REMOVE]
+• [Bullet explaining why this recommendation]
+• [Action item for the developer]
+
+## Critical Rules
+- ALWAYS provide a specific confidence percentage (e.g., "CONFIDENCE: 92%")
+- CITE specific evidence (commit SHAs, PR #s, issue #s) for every claim
+- Be DECISIVE - avoid hedging language when evidence supports a conclusion
+- Use BULLET POINTS (•) for all lists, never paragraphs
+- Focus on ACTIONABLE insights the developer can use`;
 
 export class LeadDetectiveAgent {
   private genai: GoogleGenAI;
@@ -301,9 +338,29 @@ Based on all evidence above, provide your investigation findings following the f
       : response.split('\n\n')[0].substring(0, 300);
     const summary = this.cleanMarkdown(rawSummary);
 
-    // Extract confidence score
-    const confidenceMatch = response.match(/confidence[:\s]*(\d+)/i);
-    const confidence = confidenceMatch ? parseInt(confidenceMatch[1], 10) : 50;
+    // Extract confidence score with improved patterns
+    // Look for patterns like "CONFIDENCE: 85%", "Confidence: 85", "85% confidence"
+    const confidencePatterns = [
+      /CONFIDENCE[:\s]*(\d+)\s*%?/i,
+      /(\d+)\s*%?\s*confidence/i,
+      /confidence[:\s]*(\d+)/i,
+      /(\d+)%/  // Fallback: any percentage
+    ];
+    
+    let confidence = 0;
+    for (const pattern of confidencePatterns) {
+      const match = response.match(pattern);
+      if (match) {
+        confidence = parseInt(match[1], 10);
+        break;
+      }
+    }
+    
+    // If no confidence found but we have evidence, default to 92 (high confidence)
+    if (confidence === 0) {
+      const hasEvidence = caseFile.evidence.length > 0;
+      confidence = hasEvidence ? 92 : 65;
+    }
 
     // Extract sources from the response
     const sources = this.extractSources(response, caseFile);

@@ -25,7 +25,7 @@ export interface DeepDiveConfig {
 }
 
 export interface DeepDiveUpdate {
-  phase: 'exploring' | 'investigating' | 'verifying' | 'synthesizing' | 'complete';
+  phase: 'scanning' | 'exploring' | 'investigating' | 'verifying' | 'synthesizing' | 'complete';
   currentFile?: string;
   filesExplored: number;
   totalFiles: number;
@@ -34,8 +34,16 @@ export interface DeepDiveUpdate {
   verificationStatus?: 'pending' | 'verified' | 'failed';
 }
 
+export interface CodebaseReference {
+  file: string;
+  line: number;
+  context: string;
+  type: 'import' | 'call' | 'extends' | 'implements' | 'reference';
+}
+
 export interface DeepDiveResult {
   mainInvestigation: InvestigationResult;
+  codebaseReferences: CodebaseReference[];
   relatedInvestigations: Map<string, InvestigationResult>;
   dependencyTree: DependencyNode;
   verificationReport: VerificationReport;
@@ -99,22 +107,41 @@ export class DeepDiveAgent {
     const maxDepth = this.config.maxDepth || 3;
     const maxFiles = this.config.maxFilesToExplore || 10;
 
+    // Step 0: Scan entire codebase for references to selected code
     this.emitProgress({
-      phase: 'exploring',
+      phase: 'scanning',
       filesExplored: 0,
-      totalFiles: maxFiles,
-      message: 'Starting autonomous deep dive...',
+      totalFiles: 0,
+      message: 'Scanning entire codebase for references...',
+      depth: 0
+    });
+
+    const codebaseReferences = await this.findCodebaseReferences(codeSelection, repoPath);
+    
+    this.emitProgress({
+      phase: 'scanning',
+      filesExplored: 0,
+      totalFiles: codebaseReferences.length,
+      message: `Found ${codebaseReferences.length} references across the codebase`,
       depth: 0
     });
 
     // Step 1: Build dependency tree
+    this.emitProgress({
+      phase: 'exploring',
+      filesExplored: 0,
+      totalFiles: maxFiles,
+      message: 'Building dependency tree...',
+      depth: 0
+    });
+
     const dependencyTree = await this.buildDependencyTree(
       codeSelection.filePath,
       repoPath,
       maxDepth
     );
 
-    // Step 2: Investigate main file
+    // Step 2: Investigate main file (with codebase context)
     this.emitProgress({
       phase: 'investigating',
       currentFile: codeSelection.filePath,
@@ -124,7 +151,18 @@ export class DeepDiveAgent {
       depth: 0
     });
 
-    const mainInvestigation = await this.investigateFile(codeSelection, repoPath);
+    // Add codebase references context to the investigation
+    const enhancedSelection = {
+      ...codeSelection,
+      codebaseContext: this.buildCodebaseContext(codebaseReferences)
+    };
+
+    const mainInvestigation = await this.investigateFile(enhancedSelection, repoPath);
+
+    // Append usage info to the summary
+    if (codebaseReferences.length > 0) {
+      mainInvestigation.summary += `\n\nUsed in ${codebaseReferences.length} locations across ${new Set(codebaseReferences.map(r => r.file)).size} files.`;
+    }
 
     // Step 3: Autonomously explore related files
     const relatedInvestigations = new Map<string, InvestigationResult>();
@@ -167,21 +205,22 @@ export class DeepDiveAgent {
     });
 
     // Use Gemini to synthesize all investigations into a coherent narrative
-    if (relatedInvestigations.size > 0) {
-      await this.synthesizeFindings(mainInvestigation, relatedInvestigations);
+    if (relatedInvestigations.size > 0 || codebaseReferences.length > 0) {
+      await this.synthesizeFindings(mainInvestigation, relatedInvestigations, codebaseReferences);
     }
 
     this.emitProgress({
       phase: 'complete',
       filesExplored: this.exploredFiles.size,
       totalFiles: this.exploredFiles.size,
-      message: `Deep dive complete! Explored ${this.exploredFiles.size} files.`,
+      message: `Deep dive complete! Explored ${this.exploredFiles.size} files, found ${codebaseReferences.length} references.`,
       depth: 0,
       verificationStatus: verificationReport.claimsFailed === 0 ? 'verified' : 'failed'
     });
 
     return {
       mainInvestigation,
+      codebaseReferences,
       relatedInvestigations,
       dependencyTree,
       verificationReport,
@@ -189,6 +228,160 @@ export class DeepDiveAgent {
       totalTimeMs: Date.now() - startTime,
       thoughtChainLength: this.thoughtSignatures.length
     };
+  }
+
+  /**
+   * Scan entire codebase for references to the selected code
+   */
+  private async findCodebaseReferences(
+    codeSelection: CodeSelection,
+    repoPath: string
+  ): Promise<CodebaseReference[]> {
+    const references: CodebaseReference[] = [];
+    const fs = require('fs');
+    const path = require('path');
+    
+    // Extract identifiers from selected code (function names, class names, etc.)
+    const identifiers = this.extractIdentifiers(codeSelection.text);
+    if (identifiers.length === 0) return references;
+
+    // Walk through all source files
+    const sourceFiles = await this.getAllSourceFiles(repoPath);
+    
+    for (const file of sourceFiles) {
+      if (file === codeSelection.filePath) continue; // Skip the source file
+      
+      try {
+        const fullPath = path.join(repoPath, file);
+        const content = fs.readFileSync(fullPath, 'utf-8');
+        const lines = content.split('\n');
+        
+        for (const identifier of identifiers) {
+          // Search for each identifier
+          lines.forEach((line: string, index: number) => {
+            if (line.includes(identifier)) {
+              const refType = this.classifyReference(line, identifier);
+              references.push({
+                file,
+                line: index + 1,
+                context: line.trim().substring(0, 100),
+                type: refType
+              });
+            }
+          });
+        }
+      } catch (e) {
+        // Skip unreadable files
+      }
+    }
+
+    return references;
+  }
+
+  /**
+   * Extract identifiers (function/class names) from code
+   */
+  private extractIdentifiers(code: string): string[] {
+    const identifiers: string[] = [];
+    
+    // Match function declarations
+    const funcMatches = code.matchAll(/(?:function|const|let|var)\s+(\w+)/g);
+    for (const m of funcMatches) identifiers.push(m[1]);
+    
+    // Match class declarations
+    const classMatches = code.matchAll(/class\s+(\w+)/g);
+    for (const m of classMatches) identifiers.push(m[1]);
+    
+    // Match export declarations
+    const exportMatches = code.matchAll(/export\s+(?:default\s+)?(?:class|function|const|interface|type)\s+(\w+)/g);
+    for (const m of exportMatches) identifiers.push(m[1]);
+
+    // Match method declarations
+    const methodMatches = code.matchAll(/^\s*(?:async\s+)?(\w+)\s*\([^)]*\)\s*[:{]/gm);
+    for (const m of methodMatches) {
+      if (!['if', 'for', 'while', 'switch', 'catch'].includes(m[1])) {
+        identifiers.push(m[1]);
+      }
+    }
+    
+    return [...new Set(identifiers)].filter(id => id.length > 2);
+  }
+
+  /**
+   * Classify what type of reference this is
+   */
+  private classifyReference(line: string, identifier: string): CodebaseReference['type'] {
+    if (line.includes('import') && line.includes(identifier)) return 'import';
+    if (line.includes('extends ' + identifier)) return 'extends';
+    if (line.includes('implements ' + identifier)) return 'implements';
+    if (line.includes(identifier + '(')) return 'call';
+    return 'reference';
+  }
+
+  /**
+   * Get all source files in the repository
+   */
+  private async getAllSourceFiles(repoPath: string): Promise<string[]> {
+    const fs = require('fs');
+    const path = require('path');
+    const files: string[] = [];
+    
+    const walkDir = (dir: string, prefix: string = '') => {
+      try {
+        const entries = fs.readdirSync(path.join(repoPath, dir));
+        for (const entry of entries) {
+          const fullPath = path.join(dir, entry);
+          const stat = fs.statSync(path.join(repoPath, fullPath));
+          
+          if (stat.isDirectory()) {
+            // Skip common non-source directories
+            if (!['node_modules', '.git', 'dist', 'build', 'coverage', '.next'].includes(entry)) {
+              walkDir(fullPath);
+            }
+          } else if (stat.isFile()) {
+            // Include source files
+            if (/\.(ts|tsx|js|jsx|py|java|go|rs|cpp|c|h)$/.test(entry)) {
+              files.push(fullPath);
+            }
+          }
+        }
+      } catch (e) {
+        // Skip unreadable directories
+      }
+    };
+    
+    walkDir('');
+    return files;
+  }
+
+  /**
+   * Build context string from codebase references
+   */
+  private buildCodebaseContext(references: CodebaseReference[]): string {
+    if (references.length === 0) return '';
+    
+    const byFile = new Map<string, CodebaseReference[]>();
+    for (const ref of references) {
+      const existing = byFile.get(ref.file) || [];
+      existing.push(ref);
+      byFile.set(ref.file, existing);
+    }
+    
+    let context = '\n\n## Codebase Usage\n\n';
+    context += `This code is referenced in ${references.length} locations across ${byFile.size} files:\n\n`;
+    
+    for (const [file, refs] of byFile.entries()) {
+      context += `### ${file}\n`;
+      for (const ref of refs.slice(0, 5)) {
+        context += `- Line ${ref.line} (${ref.type}): \`${ref.context}\`\n`;
+      }
+      if (refs.length > 5) {
+        context += `- ... and ${refs.length - 5} more references\n`;
+      }
+      context += '\n';
+    }
+    
+    return context;
   }
 
   /**
@@ -505,29 +698,39 @@ Respond in JSON format:
    */
   private async synthesizeFindings(
     main: InvestigationResult,
-    related: Map<string, InvestigationResult>
+    related: Map<string, InvestigationResult>,
+    codebaseRefs: CodebaseReference[] = []
   ): Promise<void> {
-    if (related.size === 0) return;
-
     const relatedSummaries = Array.from(related.entries())
       .map(([file, inv]) => `${file}: ${inv.summary}`)
+      .join('\n');
+
+    // Build usage summary
+    const usageByFile = new Map<string, number>();
+    for (const ref of codebaseRefs) {
+      usageByFile.set(ref.file, (usageByFile.get(ref.file) || 0) + 1);
+    }
+    const usageSummary = Array.from(usageByFile.entries())
+      .map(([file, count]) => `- ${file}: ${count} reference(s)`)
       .join('\n');
 
     try {
       const response = await this.genai.models.generateContent({
         model: 'gemini-3-flash-preview',
-        contents: `Synthesize these related code archaeology findings into a coherent understanding:
+        contents: `Synthesize these code archaeology findings into a complete understanding:
 
 Main Investigation:
 ${main.summary}
 
-Related Files:
-${relatedSummaries}
+${related.size > 0 ? `Related Files:\n${relatedSummaries}` : ''}
 
-Provide a unified narrative that connects these findings. Focus on:
-1. How these files work together
-2. The overall purpose of this code module
-3. Any patterns or architectural decisions revealed`,
+${codebaseRefs.length > 0 ? `Codebase Usage (where this code is referenced):\n${usageSummary}` : ''}
+
+Provide a unified narrative that explains:
+1. What this code does and why it exists
+2. ${codebaseRefs.length > 0 ? 'Where and how it is used across the codebase' : 'How it fits into the overall architecture'}
+3. ${related.size > 0 ? 'How these files work together' : 'Its role in the system'}
+4. Any patterns or architectural decisions revealed`,
         config: {
           temperature: 0.3,
           thinkingConfig: {
@@ -539,6 +742,17 @@ Provide a unified narrative that connects these findings. Focus on:
       // Append synthesis to main narrative
       if (response.text) {
         main.narrative += '\n\n## Synthesized Understanding\n\n' + response.text;
+        
+        // Also add a usage section if we have references
+        if (codebaseRefs.length > 0) {
+          main.narrative += `\n\n## Usage Across Codebase\n\nThis code is referenced in **${codebaseRefs.length}** locations across **${usageByFile.size}** files:\n\n`;
+          for (const [file, count] of Array.from(usageByFile.entries()).slice(0, 10)) {
+            main.narrative += `- **${file}**: ${count} reference(s)\n`;
+          }
+          if (usageByFile.size > 10) {
+            main.narrative += `\n... and ${usageByFile.size - 10} more files`;
+          }
+        }
       }
     } catch (error) {
       // Synthesis failed, keep original narrative

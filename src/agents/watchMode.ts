@@ -18,9 +18,15 @@ export interface WatchConfig {
   investigateNewCommits?: boolean;
   investigateSuspiciousPatterns?: boolean;
   maxInvestigationsPerPoll?: number;
+  // New: Auto-check for remote changes
+  checkRemoteChanges?: boolean;     // Check for incoming/outgoing commits
+  checkMergeConflicts?: boolean;    // Check for potential merge conflicts
+  autoFetchInterval?: number;       // How often to fetch from remote (default: 60000)
   onNewCommit?: (commit: WatchedCommit) => void;
   onInvestigationComplete?: (result: WatchInvestigationResult) => void;
   onSuspiciousChange?: (alert: SuspiciousChangeAlert) => void;
+  onRemoteSync?: (status: RemoteSyncStatus) => void;
+  onMergeConflict?: (conflict: MergeConflictAlert) => void;
 }
 
 export interface WatchedCommit {
@@ -34,7 +40,7 @@ export interface WatchedCommit {
 export interface WatchInvestigationResult {
   commit: WatchedCommit;
   investigation: InvestigationResult;
-  triggeredBy: 'new_commit' | 'suspicious_pattern';
+  triggeredBy: 'new_commit' | 'suspicious_pattern' | 'merge_conflict';
   timestamp: Date;
 }
 
@@ -44,6 +50,27 @@ export interface SuspiciousChangeAlert {
   line: number;
   description: string;
   severity: 'low' | 'medium' | 'high';
+}
+
+// New: Remote sync status
+export interface RemoteSyncStatus {
+  branch: string;
+  remoteBranch: string;
+  incomingCommits: number;
+  outgoingCommits: number;
+  lastFetched: Date;
+  needsPull: boolean;
+  needsPush: boolean;
+}
+
+// New: Merge conflict alert
+export interface MergeConflictAlert {
+  type: 'potential_conflict' | 'actual_conflict';
+  branch: string;
+  targetBranch: string;
+  conflictingFiles: string[];
+  severity: 'warning' | 'error';
+  suggestedAction: string;
 }
 
 // Patterns that might indicate suspicious or important changes
@@ -61,8 +88,10 @@ export class WatchModeAgent extends EventEmitter {
   private lastKnownCommit: string | null = null;
   private isWatching: boolean = false;
   private pollTimer: NodeJS.Timeout | null = null;
+  private fetchTimer: NodeJS.Timeout | null = null;
   private investigator: Investigator;
   private investigationHistory: WatchInvestigationResult[] = [];
+  private lastSyncStatus: RemoteSyncStatus | null = null;
 
   constructor(repoPath: string, config: WatchConfig) {
     super();
@@ -98,8 +127,14 @@ export class WatchModeAgent extends EventEmitter {
       startCommit: this.lastKnownCommit
     });
 
-    // Start polling
+    // Start polling for local changes
     this.poll();
+
+    // Start remote sync checking if enabled
+    if (this.config.checkRemoteChanges || this.config.checkMergeConflicts) {
+      console.log(`🌐 Remote sync checking enabled`);
+      this.checkRemoteSync();
+    }
   }
 
   /**
@@ -109,6 +144,10 @@ export class WatchModeAgent extends EventEmitter {
     if (this.pollTimer) {
       clearTimeout(this.pollTimer);
       this.pollTimer = null;
+    }
+    if (this.fetchTimer) {
+      clearTimeout(this.fetchTimer);
+      this.fetchTimer = null;
     }
     this.isWatching = false;
     
@@ -377,5 +416,160 @@ export class WatchModeAgent extends EventEmitter {
     }
 
     return report;
+  }
+
+  /**
+   * Check for remote sync status (incoming/outgoing commits)
+   */
+  private async checkRemoteSync(): Promise<void> {
+    if (!this.isWatching) return;
+
+    try {
+      // Fetch from remote (quietly)
+      await this.git.fetch(['--quiet']);
+      
+      // Get current branch
+      const branchInfo = await this.git.branch();
+      const currentBranch = branchInfo.current;
+      const remoteBranch = `origin/${currentBranch}`;
+
+      // Count incoming commits (remote has, we don't)
+      let incomingCommits = 0;
+      let outgoingCommits = 0;
+
+      try {
+        const incoming = await this.git.raw(['rev-list', '--count', `${currentBranch}..${remoteBranch}`]);
+        incomingCommits = parseInt(incoming.trim(), 10) || 0;
+      } catch (e) {
+        // Remote branch might not exist
+      }
+
+      try {
+        const outgoing = await this.git.raw(['rev-list', '--count', `${remoteBranch}..${currentBranch}`]);
+        outgoingCommits = parseInt(outgoing.trim(), 10) || 0;
+      } catch (e) {
+        // Remote branch might not exist
+      }
+
+      const syncStatus: RemoteSyncStatus = {
+        branch: currentBranch,
+        remoteBranch,
+        incomingCommits,
+        outgoingCommits,
+        lastFetched: new Date(),
+        needsPull: incomingCommits > 0,
+        needsPush: outgoingCommits > 0
+      };
+
+      // Only emit if status changed
+      if (this.lastSyncStatus === null || 
+          this.lastSyncStatus.incomingCommits !== incomingCommits ||
+          this.lastSyncStatus.outgoingCommits !== outgoingCommits) {
+        
+        if (syncStatus.needsPull) {
+          console.log(`⬇️  ${incomingCommits} incoming commit(s) from remote - Pull recommended`);
+        }
+        if (syncStatus.needsPush) {
+          console.log(`⬆️  ${outgoingCommits} outgoing commit(s) - Push recommended`);
+        }
+
+        this.config.onRemoteSync?.(syncStatus);
+        this.emit('remoteSync', syncStatus);
+      }
+
+      this.lastSyncStatus = syncStatus;
+
+      // Check for potential merge conflicts if we need to pull
+      if (this.config.checkMergeConflicts && syncStatus.needsPull) {
+        await this.checkMergeConflicts(currentBranch, remoteBranch);
+      }
+
+    } catch (error) {
+      // Silent fail for network issues
+      this.emit('remoteSyncError', error);
+    }
+
+    // Schedule next check
+    this.fetchTimer = setTimeout(
+      () => this.checkRemoteSync(),
+      this.config.autoFetchInterval || 60000
+    );
+  }
+
+  /**
+   * Check for potential merge conflicts before pulling
+   */
+  private async checkMergeConflicts(localBranch: string, remoteBranch: string): Promise<void> {
+    try {
+      // Get files that would conflict (dry-run merge)
+      // First, get the list of files modified locally
+      const localChanges = await this.git.raw(['diff', '--name-only', 'HEAD']);
+      const localFiles = new Set(localChanges.trim().split('\n').filter(f => f));
+
+      // Get files modified in incoming commits
+      const remoteChanges = await this.git.raw(['diff', '--name-only', `${localBranch}...${remoteBranch}`]);
+      const remoteFiles = new Set(remoteChanges.trim().split('\n').filter(f => f));
+
+      // Find overlapping files (potential conflicts)
+      const conflictingFiles: string[] = [];
+      for (const file of localFiles) {
+        if (remoteFiles.has(file)) {
+          conflictingFiles.push(file);
+        }
+      }
+
+      if (conflictingFiles.length > 0) {
+        const alert: MergeConflictAlert = {
+          type: 'potential_conflict',
+          branch: localBranch,
+          targetBranch: remoteBranch,
+          conflictingFiles,
+          severity: 'warning',
+          suggestedAction: `Review changes in ${conflictingFiles.length} file(s) before pulling: ${conflictingFiles.slice(0, 3).join(', ')}${conflictingFiles.length > 3 ? '...' : ''}`
+        };
+
+        console.log(`⚠️  Potential merge conflict detected in ${conflictingFiles.length} file(s)`);
+        conflictingFiles.forEach(f => console.log(`   - ${f}`));
+
+        this.config.onMergeConflict?.(alert);
+        this.emit('mergeConflict', alert);
+      }
+
+      // Also check for actual merge conflicts in working directory
+      const status = await this.git.status();
+      if (status.conflicted.length > 0) {
+        const alert: MergeConflictAlert = {
+          type: 'actual_conflict',
+          branch: localBranch,
+          targetBranch: remoteBranch,
+          conflictingFiles: status.conflicted,
+          severity: 'error',
+          suggestedAction: `Resolve ${status.conflicted.length} merge conflict(s) before continuing`
+        };
+
+        console.log(`❌ Active merge conflicts detected in ${status.conflicted.length} file(s)`);
+
+        this.config.onMergeConflict?.(alert);
+        this.emit('mergeConflict', alert);
+      }
+
+    } catch (error) {
+      // Conflict check failed, continue silently
+    }
+  }
+
+  /**
+   * Get current sync status
+   */
+  getSyncStatus(): RemoteSyncStatus | null {
+    return this.lastSyncStatus;
+  }
+
+  /**
+   * Force sync check now
+   */
+  async forceSyncCheck(): Promise<RemoteSyncStatus | null> {
+    await this.checkRemoteSync();
+    return this.lastSyncStatus;
   }
 }

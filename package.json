@@ -1,9 +1,10 @@
 {
-  "name": "repo-archaeologist",
-  "displayName": "The Repo Archaeologist",
+  "name": "code-detective",
+  "displayName": "Code Detective",
+  "icon": "images/icon.png",
   "description": "Git blame tells you WHO. We tell you WHY. An AI-powered code archaeology tool using Gemini 3.",
   "version": "0.1.0",
-  "publisher": "repo-archaeologist",
+  "publisher": "code-detective",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -16,122 +17,158 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "repoArchaeologist",
-          "title": "Repo Archaeologist",
-          "icon": "$(book)"
+          "id": "codeDetective",
+          "title": "Code Detective",
+          "icon": "$(telescope)"
         }
       ]
     },
     "views": {
-      "repoArchaeologist": [
+      "codeDetective": [
         {
-          "id": "repoArchaeologist.actions",
+          "id": "codeDetective.actions",
           "name": "Actions",
           "type": "webview"
         },
         {
-          "id": "repoArchaeologist.history",
+          "id": "codeDetective.history",
           "name": "Investigation History"
         }
       ]
     },
     "commands": [
       {
-        "command": "repoArchaeologist.investigate",
+        "command": "codeDetective.investigate",
         "title": "Investigate Code - Why does this exist?",
-        "category": "Repo Archaeologist",
+        "category": "Code Detective",
         "icon": "$(search)"
       },
       {
-        "command": "repoArchaeologist.deepDive",
+        "command": "codeDetective.deepDive",
         "title": "Deep Dive - Autonomous Investigation",
-        "category": "Repo Archaeologist",
+        "category": "Code Detective",
         "icon": "$(telescope)"
       },
       {
-        "command": "repoArchaeologist.resolveConflicts",
+        "command": "codeDetective.resolveConflicts",
         "title": "Resolve Merge Conflicts (AI)",
-        "category": "Repo Archaeologist",
+        "category": "Code Detective",
         "icon": "$(git-merge)"
       },
       {
-        "command": "repoArchaeologist.watchMode",
+        "command": "codeDetective.watchMode",
         "title": "Start Watch Mode",
-        "category": "Repo Archaeologist",
+        "category": "Code Detective",
         "icon": "$(eye)"
       },
       {
-        "command": "repoArchaeologist.blame",
+        "command": "codeDetective.blame",
         "title": "Quick Blame Lookup",
-        "category": "Repo Archaeologist",
+        "category": "Code Detective",
         "icon": "$(git-commit)"
+      },
+      {
+        "command": "codeDetective.timeline",
+        "title": "View Code Timeline",
+        "category": "Code Detective",
+        "icon": "$(history)"
+      },
+      {
+        "command": "codeDetective.techDebt",
+        "title": "Analyze Tech Debt",
+        "category": "Code Detective",
+        "icon": "$(warning)"
+      },
+      {
+        "command": "codeDetective.generateCommit",
+        "title": "Generate Commit Message (AI)",
+        "category": "Code Detective",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "codeDetective.whoKnowsWhat",
+        "title": "Who Knows What - Expertise Map",
+        "category": "Code Detective",
+        "icon": "$(organization)"
+      },
+      {
+        "command": "codeDetective.onboarding",
+        "title": "Generate Onboarding Docs",
+        "category": "Code Detective",
+        "icon": "$(book)"
+      },
+      {
+        "command": "codeDetective.exportMarkdown",
+        "title": "Export Investigation to Markdown",
+        "category": "Code Detective",
+        "icon": "$(markdown)"
       }
     ],
     "menus": {
       "editor/context": [
         {
-          "command": "repoArchaeologist.investigate",
+          "command": "codeDetective.investigate",
           "when": "editorHasSelection",
           "group": "navigation@1"
         },
         {
-          "command": "repoArchaeologist.deepDive",
+          "command": "codeDetective.deepDive",
           "when": "editorHasSelection",
           "group": "navigation@2"
         },
         {
-          "command": "repoArchaeologist.blame",
+          "command": "codeDetective.blame",
           "group": "navigation@3"
         }
       ],
       "scm/resourceState/context": [
         {
-          "command": "repoArchaeologist.resolveConflicts",
+          "command": "codeDetective.resolveConflicts",
           "when": "scmResourceState == conflict",
           "group": "inline"
         }
       ],
       "commandPalette": [
         {
-          "command": "repoArchaeologist.investigate",
+          "command": "codeDetective.investigate",
           "when": "editorIsOpen"
         },
         {
-          "command": "repoArchaeologist.deepDive",
+          "command": "codeDetective.deepDive",
           "when": "editorIsOpen"
         },
         {
-          "command": "repoArchaeologist.resolveConflicts"
+          "command": "codeDetective.resolveConflicts"
         },
         {
-          "command": "repoArchaeologist.watchMode"
+          "command": "codeDetective.watchMode"
         },
         {
-          "command": "repoArchaeologist.blame",
+          "command": "codeDetective.blame",
           "when": "editorIsOpen"
         }
       ]
     },
     "configuration": {
-      "title": "Repo Archaeologist",
+      "title": "Code Detective",
       "properties": {
-        "repoArchaeologist.geminiApiKey": {
+        "codeDetective.geminiApiKey": {
           "type": "string",
           "default": "",
           "description": "Your Gemini API key"
         },
-        "repoArchaeologist.githubToken": {
+        "codeDetective.githubToken": {
           "type": "string",
           "default": "",
           "description": "GitHub Personal Access Token for PR/Issue lookup"
         },
-        "repoArchaeologist.thinkingLevel": {
+        "codeDetective.thinkingLevel": {
           "type": "string",
           "enum": ["low", "medium", "high"],
           "default": "high",
           "description": "Gemini 3 thinking depth level"
         },
-        "repoArchaeologist.autoApplyConflicts": {
+        "codeDetective.autoApplyConflicts": {
           "type": "boolean",
           "default": false,
           "description": "Auto-apply high-confidence conflict resolutions"

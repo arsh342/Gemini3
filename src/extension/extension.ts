@@ -1,18 +1,115 @@
 /**
- * The Repo Archaeologist - VS Code Extension
+ * Code Detective - VS Code Extension
  * Main extension entry point
  */
 
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { Investigator } from '../investigator';
 import { StreamUpdate, InvestigationResult } from '../agents/types';
 
 let investigationPanel: vscode.WebviewPanel | undefined;
 
+// Investigation History Item
+interface HistoryItem {
+  id: string;
+  filePath: string;
+  lineStart: number;
+  lineEnd: number;
+  summary: string;
+  confidence: number;
+  timestamp: Date;
+  result?: InvestigationResult;
+}
+
+// Store investigations in memory (persists per session)
+const investigationHistory: HistoryItem[] = [];
+
+// Tree Item for history
+class HistoryTreeItem extends vscode.TreeItem {
+  constructor(
+    public readonly item: HistoryItem
+  ) {
+    super(
+      `${path.basename(item.filePath)}:${item.lineStart}`,
+      vscode.TreeItemCollapsibleState.None
+    );
+    
+    this.description = `${item.confidence}% • ${this.formatTime(item.timestamp)}`;
+    this.tooltip = item.summary;
+    this.iconPath = new vscode.ThemeIcon(
+      item.confidence >= 90 ? 'pass' : item.confidence >= 70 ? 'warning' : 'error'
+    );
+    
+    this.command = {
+      command: 'codeDetective.showHistoryItem',
+      title: 'Show Investigation',
+      arguments: [item]
+    };
+  }
+  
+  private formatTime(date: Date): string {
+    const now = new Date();
+    const diff = now.getTime() - date.getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return date.toLocaleDateString();
+  }
+}
+
+// Investigation History Provider
+class InvestigationHistoryProvider implements vscode.TreeDataProvider<HistoryTreeItem> {
+  private _onDidChangeTreeData = new vscode.EventEmitter<HistoryTreeItem | undefined>();
+  readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+  refresh(): void {
+    this._onDidChangeTreeData.fire(undefined);
+  }
+
+  getTreeItem(element: HistoryTreeItem): vscode.TreeItem {
+    return element;
+  }
+
+  getChildren(): HistoryTreeItem[] {
+    return investigationHistory
+      .slice()
+      .reverse()
+      .map(item => new HistoryTreeItem(item));
+  }
+}
+
+// Export for use in other functions
+let historyProvider: InvestigationHistoryProvider;
+
+function addToHistory(result: InvestigationResult, filePath: string, lineStart: number, lineEnd: number) {
+  const item: HistoryItem = {
+    id: `${Date.now()}`,
+    filePath,
+    lineStart,
+    lineEnd,
+    summary: result.summary.substring(0, 100) + (result.summary.length > 100 ? '...' : ''),
+    confidence: result.confidence,
+    timestamp: new Date(),
+    result
+  };
+  
+  investigationHistory.push(item);
+  
+  // Keep only last 50 investigations
+  if (investigationHistory.length > 50) {
+    investigationHistory.shift();
+  }
+  
+  historyProvider?.refresh();
+}
+
 // Sidebar Webview Provider
 class RepoArchaeologistSidebarProvider implements vscode.WebviewViewProvider {
-  public static readonly viewType = 'repoArchaeologist.actions';
+  public static readonly viewType = 'codeDetective.actions';
   private _view?: vscode.WebviewView;
 
   constructor(private readonly _extensionUri: vscode.Uri) {}
@@ -35,19 +132,37 @@ class RepoArchaeologistSidebarProvider implements vscode.WebviewViewProvider {
     webviewView.webview.onDidReceiveMessage(async (data) => {
       switch (data.command) {
         case 'investigate':
-          vscode.commands.executeCommand('repoArchaeologist.investigate');
+          vscode.commands.executeCommand('codeDetective.investigate');
           break;
         case 'deepDive':
-          vscode.commands.executeCommand('repoArchaeologist.deepDive');
+          vscode.commands.executeCommand('codeDetective.deepDive');
           break;
         case 'resolveConflicts':
-          vscode.commands.executeCommand('repoArchaeologist.resolveConflicts');
+          vscode.commands.executeCommand('codeDetective.resolveConflicts');
           break;
         case 'watchMode':
-          vscode.commands.executeCommand('repoArchaeologist.watchMode');
+          vscode.commands.executeCommand('codeDetective.watchMode');
           break;
         case 'blame':
-          vscode.commands.executeCommand('repoArchaeologist.blame');
+          vscode.commands.executeCommand('codeDetective.blame');
+          break;
+        case 'timeline':
+          vscode.commands.executeCommand('codeDetective.timeline');
+          break;
+        case 'techDebt':
+          vscode.commands.executeCommand('codeDetective.techDebt');
+          break;
+        case 'generateCommit':
+          vscode.commands.executeCommand('codeDetective.generateCommit');
+          break;
+        case 'whoKnowsWhat':
+          vscode.commands.executeCommand('codeDetective.whoKnowsWhat');
+          break;
+        case 'onboarding':
+          vscode.commands.executeCommand('codeDetective.onboarding');
+          break;
+        case 'exportMarkdown':
+          vscode.commands.executeCommand('codeDetective.exportMarkdown');
           break;
       }
     });
@@ -58,27 +173,12 @@ class RepoArchaeologistSidebarProvider implements vscode.WebviewViewProvider {
     <html>
     <head>
       <link rel="stylesheet" href="https://unpkg.com/@vscode/codicons/dist/codicon.css">
-      <link rel="preconnect" href="https://fonts.googleapis.com">
-      <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
       <style>
-        :root {
-          --noir-bg: #0a0a0f;
-          --noir-panel: #12121a;
-          --noir-card: #1a1a24;
-          --noir-border: #2a2a36;
-          --noir-text: #e8e6e3;
-          --noir-muted: #6a6a6a;
-          --noir-red: #c9302c;
-          --noir-red-glow: #ff4444;
-          --noir-amber: #d4a017;
-          --noir-amber-glow: #ffc107;
-        }
-        
         body {
-          font-family: 'JetBrains Mono', monospace;
-          background: var(--noir-bg);
+          font-family: var(--vscode-font-family);
+          background: var(--vscode-sideBar-background);
           padding: 16px;
-          color: var(--noir-text);
+          color: var(--vscode-foreground);
           margin: 0;
         }
         
@@ -86,140 +186,66 @@ class RepoArchaeologistSidebarProvider implements vscode.WebviewViewProvider {
           display: flex;
           align-items: center;
           gap: 10px;
-          margin-bottom: 24px;
-          padding-bottom: 16px;
-          border-bottom: 1px solid var(--noir-border);
-        }
-        
-        .logo {
-          width: 32px;
-          height: 32px;
-          background: linear-gradient(135deg, var(--noir-red), var(--noir-amber));
-          border-radius: 6px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 18px;
+          margin-bottom: 20px;
+          padding-bottom: 12px;
+          border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border);
         }
         
         .title {
-          font-family: 'Playfair Display', serif;
-          font-size: 15px;
-          font-weight: 700;
-          color: var(--noir-text);
-          letter-spacing: 0.5px;
-        }
-        
-        .subtitle {
-          font-size: 10px;
-          color: var(--noir-amber);
-          text-transform: uppercase;
-          letter-spacing: 2px;
-          margin-top: 2px;
+          font-size: 14px;
+          font-weight: 600;
+          color: var(--vscode-foreground);
         }
         
         .section {
-          margin-bottom: 20px;
+          margin-bottom: 16px;
         }
         
         .section-title {
-          font-size: 9px;
+          font-size: 11px;
           text-transform: uppercase;
-          letter-spacing: 2px;
-          color: var(--noir-muted);
-          margin-bottom: 10px;
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        
-        .section-title::after {
-          content: '';
-          flex: 1;
-          height: 1px;
-          background: var(--noir-border);
+          letter-spacing: 1px;
+          color: var(--vscode-descriptionForeground);
+          margin-bottom: 8px;
         }
         
         .btn {
           display: flex;
           align-items: center;
-          gap: 10px;
+          gap: 8px;
           width: 100%;
-          padding: 12px 14px;
-          margin-bottom: 6px;
-          background: var(--noir-card);
-          color: var(--noir-text);
-          border: 1px solid var(--noir-border);
-          border-radius: 6px;
+          padding: 8px 10px;
+          margin-bottom: 4px;
+          background: var(--vscode-button-secondaryBackground);
+          color: var(--vscode-button-secondaryForeground);
+          border: none;
+          border-radius: 4px;
           cursor: pointer;
           text-align: left;
-          font-family: 'JetBrains Mono', monospace;
-          font-size: 12px;
-          transition: all 0.2s;
+          font-family: var(--vscode-font-family);
+          font-size: 13px;
+          transition: background 0.15s;
         }
         
         .btn:hover {
-          border-color: var(--noir-amber);
-          box-shadow: 0 0 12px rgba(212, 160, 23, 0.15);
+          background: var(--vscode-button-secondaryHoverBackground);
         }
         
         .btn-primary {
-          background: linear-gradient(135deg, var(--noir-red), #8b1a1a);
-          border-color: var(--noir-red);
+          background: var(--vscode-button-background);
+          color: var(--vscode-button-foreground);
         }
         
         .btn-primary:hover {
-          box-shadow: 0 0 16px rgba(201, 48, 44, 0.3);
-          border-color: var(--noir-red-glow);
+          background: var(--vscode-button-hoverBackground);
         }
-        
-        .btn-icon {
-          width: 20px;
-          height: 20px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 14px;
-        }
-        
-        .btn-icon.red { color: var(--noir-red-glow); }
-        .btn-icon.amber { color: var(--noir-amber); }
         
         .desc {
-          font-size: 10px;
-          color: var(--noir-muted);
+          font-size: 11px;
+          color: var(--vscode-descriptionForeground);
           margin-top: -2px;
-          margin-bottom: 10px;
-          padding-left: 44px;
-          font-style: italic;
-        }
-        
-        .status-bar {
-          position: fixed;
-          bottom: 0;
-          left: 0;
-          right: 0;
-          padding: 8px 16px;
-          background: var(--noir-panel);
-          border-top: 1px solid var(--noir-border);
-          font-size: 10px;
-          color: var(--noir-muted);
-          display: flex;
-          align-items: center;
-          gap: 6px;
-        }
-        
-        .pulse {
-          width: 6px;
-          height: 6px;
-          background: var(--noir-amber);
-          border-radius: 50%;
-          animation: pulse 2s infinite;
-        }
-        
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.4; }
+          margin-bottom: 8px;
+          padding-left: 24px;
         }
         
         .codicon { font-size: 14px; }
@@ -227,57 +253,78 @@ class RepoArchaeologistSidebarProvider implements vscode.WebviewViewProvider {
     </head>
     <body>
       <div class="header">
-        <div class="logo">
-          <i class="codicon codicon-law"></i>
-        </div>
-        <div>
-          <div class="title">The Repo Archaeologist</div>
-          <div class="subtitle">Code Detective</div>
-        </div>
+        <i class="codicon codicon-book"></i>
+        <span class="title">Code Detective</span>
       </div>
       
       <div class="section">
         <div class="section-title">Investigation</div>
         <button class="btn btn-primary" onclick="send('investigate')">
-          <span class="btn-icon"><i class="codicon codicon-search"></i></span>
-          Investigate Selection
+          <i class="codicon codicon-search"></i> Investigate Selection
         </button>
-        <div class="desc">"Why does this code exist?"</div>
+        <div class="desc">Understand WHY selected code exists</div>
         
         <button class="btn" onclick="send('deepDive')">
-          <span class="btn-icon amber"><i class="codicon codicon-telescope"></i></span>
-          Deep Dive
+          <i class="codicon codicon-telescope"></i> Deep Dive
         </button>
-        <div class="desc">Follow the evidence trail</div>
+        <div class="desc">Follow dependencies, build complete case</div>
       </div>
       
       <div class="section">
-        <div class="section-title">Surveillance</div>
+        <div class="section-title">Monitoring</div>
         <button class="btn" onclick="send('watchMode')">
-          <span class="btn-icon amber"><i class="codicon codicon-eye"></i></span>
-          Watch Mode
+          <i class="codicon codicon-eye"></i> Watch Mode
         </button>
-        <div class="desc">Monitor for suspicious commits</div>
+        <div class="desc">Monitor commits for suspicious changes</div>
       </div>
       
       <div class="section">
-        <div class="section-title">Git Operations</div>
+        <div class="section-title">Git Tools</div>
         <button class="btn" onclick="send('resolveConflicts')">
-          <span class="btn-icon red"><i class="codicon codicon-git-merge"></i></span>
-          Resolve Conflicts
+          <i class="codicon codicon-git-merge"></i> Resolve Conflicts
         </button>
-        <div class="desc">AI-powered resolution</div>
+        <div class="desc">AI-powered conflict resolution</div>
         
         <button class="btn" onclick="send('blame')">
-          <span class="btn-icon"><i class="codicon codicon-git-commit"></i></span>
-          Quick Blame
+          <i class="codicon codicon-git-commit"></i> Quick Blame
         </button>
-        <div class="desc">Who's responsible?</div>
+        <div class="desc">Git blame for current line</div>
+        
+        <button class="btn" onclick="send('generateCommit')">
+          <i class="codicon codicon-edit"></i> Generate Commit
+        </button>
+        <div class="desc">AI writes commit message</div>
       </div>
-
-      <div class="status-bar">
-        <span class="pulse"></span>
-        Ready to investigate
+      
+      <div class="section">
+        <div class="section-title">Analysis</div>
+        <button class="btn" onclick="send('timeline')">
+          <i class="codicon codicon-history"></i> Code Timeline
+        </button>
+        <div class="desc">Visual history of code evolution</div>
+        
+        <button class="btn" onclick="send('techDebt')">
+          <i class="codicon codicon-warning"></i> Tech Debt Score
+        </button>
+        <div class="desc">Analyze technical debt</div>
+        
+        <button class="btn" onclick="send('whoKnowsWhat')">
+          <i class="codicon codicon-organization"></i> Who Knows What
+        </button>
+        <div class="desc">Expertise map by contributor</div>
+        
+        <button class="btn" onclick="send('onboarding')">
+          <i class="codicon codicon-book"></i> Onboarding Docs
+        </button>
+        <div class="desc">Generate docs for any folder</div>
+      </div>
+      
+      <div class="section">
+        <div class="section-title">Export</div>
+        <button class="btn" onclick="send('exportMarkdown')">
+          <i class="codicon codicon-markdown"></i> Export to Markdown
+        </button>
+        <div class="desc">Save last investigation</div>
       </div>
 
       <script>
@@ -292,7 +339,7 @@ class RepoArchaeologistSidebarProvider implements vscode.WebviewViewProvider {
 }
 
 export function activate(context: vscode.ExtensionContext) {
-  console.log('The Repo Archaeologist is now active!');
+  console.log('Code Detective is now active!');
 
   // Register sidebar provider
   const sidebarProvider = new RepoArchaeologistSidebarProvider(context.extensionUri);
@@ -303,9 +350,44 @@ export function activate(context: vscode.ExtensionContext) {
     )
   );
 
+  // Register Investigation History provider
+  historyProvider = new InvestigationHistoryProvider();
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('codeDetective.history', historyProvider)
+  );
+
+  // Command to show a history item
+  context.subscriptions.push(
+    vscode.commands.registerCommand('codeDetective.showHistoryItem', async (item: HistoryItem) => {
+      if (item.result) {
+        // Try to open the file
+        try {
+          const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+          if (workspaceFolder) {
+            const fullPath = path.join(workspaceFolder.uri.fsPath, item.filePath);
+            const doc = await vscode.workspace.openTextDocument(fullPath);
+            const editor = await vscode.window.showTextDocument(doc);
+            
+            const startPos = new vscode.Position(item.lineStart - 1, 0);
+            const endPos = new vscode.Position(item.lineEnd, 0);
+            editor.selection = new vscode.Selection(startPos, endPos);
+            editor.revealRange(new vscode.Range(startPos, endPos), vscode.TextEditorRevealType.InCenter);
+          }
+        } catch (e) {
+          // File may have been deleted
+        }
+        
+        // Show summary in info message
+        vscode.window.showInformationMessage(
+          `${item.confidence}% confidence: ${item.summary}`
+        );
+      }
+    })
+  );
+
   // Register the investigate command
   const investigateCommand = vscode.commands.registerCommand(
-    'repoArchaeologist.investigate',
+    'codeDetective.investigate',
     async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) {
@@ -325,7 +407,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register deep dive command
   const deepDiveCommand = vscode.commands.registerCommand(
-    'repoArchaeologist.deepDive',
+    'codeDetective.deepDive',
     async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) {
@@ -340,7 +422,7 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       // Get configuration
-      const config = vscode.workspace.getConfiguration('repoArchaeologist');
+      const config = vscode.workspace.getConfiguration('codeDetective');
       const geminiApiKey = config.get<string>('geminiApiKey') || process.env.GEMINI_API_KEY;
 
       if (!geminiApiKey) {
@@ -351,7 +433,7 @@ export function activate(context: vscode.ExtensionContext) {
         if (action === 'Open Settings') {
           vscode.commands.executeCommand(
             'workbench.action.openSettings',
-            'repoArchaeologist.geminiApiKey'
+            'codeDetective.geminiApiKey'
           );
         }
         return;
@@ -366,7 +448,7 @@ export function activate(context: vscode.ExtensionContext) {
 
       // Create results panel
       const panel = vscode.window.createWebviewPanel(
-        'repoArchaeologistDeepDive',
+        'codeDetectiveDeepDive',
         'Deep Dive Results',
         vscode.ViewColumn.Beside,
         { enableScripts: true }
@@ -409,7 +491,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register resolve conflicts command
   const resolveConflictsCommand = vscode.commands.registerCommand(
-    'repoArchaeologist.resolveConflicts',
+    'codeDetective.resolveConflicts',
     async () => {
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
       if (!workspaceFolder) {
@@ -417,7 +499,7 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      const config = vscode.workspace.getConfiguration('repoArchaeologist');
+      const config = vscode.workspace.getConfiguration('codeDetective');
       const geminiApiKey = config.get<string>('geminiApiKey') || process.env.GEMINI_API_KEY;
 
       if (!geminiApiKey) {
@@ -427,9 +509,9 @@ export function activate(context: vscode.ExtensionContext) {
 
       // Create results panel
       const panel = vscode.window.createWebviewPanel(
-        'repoArchaeologistConflicts',
+        'codeDetectiveConflicts',
         'Conflict Resolution',
-        vscode.ViewColumn.One,
+        vscode.ViewColumn.Beside,
         { enableScripts: true }
       );
 
@@ -496,7 +578,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register watch mode command
   const watchModeCommand = vscode.commands.registerCommand(
-    'repoArchaeologist.watchMode',
+    'codeDetective.watchMode',
     async () => {
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
       if (!workspaceFolder) {
@@ -504,7 +586,7 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      const config = vscode.workspace.getConfiguration('repoArchaeologist');
+      const config = vscode.workspace.getConfiguration('codeDetective');
       const geminiApiKey = config.get<string>('geminiApiKey') || process.env.GEMINI_API_KEY;
 
       if (!geminiApiKey) {
@@ -513,28 +595,125 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       const action = await vscode.window.showInformationMessage(
-        'Start Watch Mode? The extension will monitor for new commits and investigate suspicious changes.',
+        'Start Watch Mode? Monitor for new commits, check remote sync status, and detect potential merge conflicts.',
         'Start Monitoring', 'Cancel'
       );
 
       if (action === 'Start Monitoring') {
+        const config = vscode.workspace.getConfiguration('codeDetective');
+        const apiKey = config.get<string>('geminiApiKey') || process.env.GEMINI_API_KEY;
+
+        if (!apiKey) {
+          vscode.window.showErrorMessage('Gemini API key required. Set codeDetective.geminiApiKey in settings.');
+          return;
+        }
+
         const statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
         statusBarItem.text = '$(eye) Watching...';
-        statusBarItem.tooltip = 'Repo Archaeologist: Monitoring for commits';
+        statusBarItem.tooltip = 'Code Detective: Monitoring for commits and remote changes';
         statusBarItem.show();
 
-        vscode.window.showInformationMessage('Watch Mode active. Monitoring repository for new commits...');
+        try {
+          const { WatchModeAgent } = await import('../agents/watchMode');
+          
+          const watchAgent = new WatchModeAgent(workspaceFolder.uri.fsPath, {
+            geminiApiKey: apiKey,
+            pollIntervalMs: 30000,
+            investigateNewCommits: true,
+            investigateSuspiciousPatterns: true,
+            checkRemoteChanges: true,
+            checkMergeConflicts: true,
+            autoFetchInterval: 60000,
+            onRemoteSync: (status) => {
+              if (status.needsPull) {
+                statusBarItem.text = `$(arrow-down) ${status.incomingCommits} incoming`;
+                vscode.window.showInformationMessage(
+                  `⬇️ ${status.incomingCommits} new commit(s) available from remote. Pull recommended.`,
+                  'Pull Now'
+                ).then(choice => {
+                  if (choice === 'Pull Now') {
+                    vscode.commands.executeCommand('git.pull');
+                  }
+                });
+              }
+              if (status.needsPush) {
+                statusBarItem.text = `$(arrow-up) ${status.outgoingCommits} to push`;
+                vscode.window.showInformationMessage(
+                  `⬆️ ${status.outgoingCommits} local commit(s) ready to push.`,
+                  'Push Now'
+                ).then(choice => {
+                  if (choice === 'Push Now') {
+                    vscode.commands.executeCommand('git.push');
+                  }
+                });
+              }
+              if (!status.needsPull && !status.needsPush) {
+                statusBarItem.text = '$(check) Synced';
+              }
+            },
+            onMergeConflict: (conflict) => {
+              if (conflict.type === 'potential_conflict') {
+                vscode.window.showWarningMessage(
+                  `⚠️ Potential merge conflict in ${conflict.conflictingFiles.length} file(s): ${conflict.conflictingFiles.slice(0, 2).join(', ')}`,
+                  'View Files', 'Resolve with AI'
+                ).then(choice => {
+                  if (choice === 'Resolve with AI') {
+                    vscode.commands.executeCommand('codeDetective.resolveConflicts');
+                  } else if (choice === 'View Files') {
+                    if (conflict.conflictingFiles[0]) {
+                      vscode.workspace.openTextDocument(
+                        path.join(workspaceFolder.uri.fsPath, conflict.conflictingFiles[0])
+                      ).then(doc => vscode.window.showTextDocument(doc));
+                    }
+                  }
+                });
+              } else if (conflict.type === 'actual_conflict') {
+                vscode.window.showErrorMessage(
+                  `❌ Active merge conflict in ${conflict.conflictingFiles.length} file(s). Resolution required.`,
+                  'Resolve with AI'
+                ).then(choice => {
+                  if (choice === 'Resolve with AI') {
+                    vscode.commands.executeCommand('codeDetective.resolveConflicts');
+                  }
+                });
+              }
+            },
+            onNewCommit: (commit) => {
+              statusBarItem.text = `$(git-commit) Investigating...`;
+            },
+            onInvestigationComplete: (result) => {
+              statusBarItem.text = '$(eye) Watching...';
+              vscode.window.showInformationMessage(
+                `🔍 Investigated ${result.commit.hash.substring(0, 7)}: ${result.investigation.summary.substring(0, 80)}...`
+              );
+            }
+          });
 
-        // In a full implementation, this would start the WatchModeAgent
-        // For now, show a status bar indicator
-        context.subscriptions.push(statusBarItem);
+          await watchAgent.start();
+
+          // Store for cleanup
+          context.subscriptions.push({
+            dispose: () => {
+              watchAgent.stop();
+              statusBarItem.dispose();
+            }
+          });
+          context.subscriptions.push(statusBarItem);
+
+          vscode.window.showInformationMessage(
+            '✅ Watch Mode active. Monitoring commits, remote sync, and merge conflicts.'
+          );
+        } catch (error) {
+          statusBarItem.dispose();
+          vscode.window.showErrorMessage(`Failed to start Watch Mode: ${error}`);
+        }
       }
     }
   );
 
   // Register quick blame command - FULL IMPLEMENTATION
   const blameCommand = vscode.commands.registerCommand(
-    'repoArchaeologist.blame',
+    'codeDetective.blame',
     async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) {
@@ -589,10 +768,414 @@ export function activate(context: vscode.ExtensionContext) {
 
         if (selected?.label.includes('Investigate')) {
           // Trigger investigation for this line
-          vscode.commands.executeCommand('repoArchaeologist.investigate');
+          vscode.commands.executeCommand('codeDetective.investigate');
         }
       } catch (error) {
         vscode.window.showErrorMessage(`Blame failed: ${error}`);
+      }
+    }
+  );
+
+  // Register Code Timeline command
+  const timelineCommand = vscode.commands.registerCommand(
+    'codeDetective.timeline',
+    async () => {
+      const editor = vscode.window.activeTextEditor;
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      
+      if (!workspaceFolder) {
+        vscode.window.showErrorMessage('Not in a workspace');
+        return;
+      }
+
+      await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: 'Building Code Timeline...',
+        cancellable: false
+      }, async () => {
+        try {
+          const { TimelineAgent } = await import('../agents/timelineAgent');
+          const timeline = new TimelineAgent(workspaceFolder.uri.fsPath);
+          
+          let data;
+          let title;
+          
+          if (editor) {
+            const relativePath = path.relative(workspaceFolder.uri.fsPath, editor.document.fileName);
+            data = await timeline.getFileTimeline(relativePath);
+            title = `Timeline: ${path.basename(editor.document.fileName)}`;
+          } else {
+            data = await timeline.getRepoTimeline(100);
+            title = 'Repository Timeline';
+          }
+          
+          const html = timeline.generateTimelineHTML(data, editor ? editor.document.fileName : undefined);
+          
+          // Show in webview
+          const panel = vscode.window.createWebviewPanel(
+            'codeTimeline',
+            title,
+            vscode.ViewColumn.Beside,
+            { enableScripts: true }
+          );
+          panel.webview.html = html;
+          
+        } catch (error) {
+          vscode.window.showErrorMessage(`Timeline failed: ${error}`);
+        }
+      });
+    }
+  );
+
+  // Register Tech Debt command
+  const techDebtCommand = vscode.commands.registerCommand(
+    'codeDetective.techDebt',
+    async () => {
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      
+      if (!workspaceFolder) {
+        vscode.window.showErrorMessage('Not in a workspace');
+        return;
+      }
+
+      const config = vscode.workspace.getConfiguration('codeDetective');
+      const apiKey = config.get<string>('geminiApiKey') || process.env.GEMINI_API_KEY;
+
+      if (!apiKey) {
+        vscode.window.showErrorMessage('Gemini API key required');
+        return;
+      }
+
+      await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: 'Analyzing Tech Debt...',
+        cancellable: false
+      }, async () => {
+        try {
+          const { TechDebtAgent } = await import('../agents/techDebtAgent');
+          const agent = new TechDebtAgent(workspaceFolder.uri.fsPath, apiKey);
+          const result = await agent.analyzeProject();
+          
+          // Show result in webview
+          const panel = vscode.window.createWebviewPanel(
+            'techDebt',
+            `Tech Debt: Grade ${result.grade}`,
+            vscode.ViewColumn.Beside,
+            {}
+          );
+          
+          const gradeColor = result.grade === 'A' ? '#4ade80' : 
+                            result.grade === 'B' ? '#a3e635' : 
+                            result.grade === 'C' ? '#facc15' : 
+                            result.grade === 'D' ? '#fb923c' : '#f87171';
+          
+          panel.webview.html = `<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    :root {
+      --bg: var(--vscode-editor-background, #1e1e1e);
+      --text: var(--vscode-editor-foreground, #d4d4d4);
+      --border: var(--vscode-input-border, #3c3c3c);
+    }
+    body { font-family: var(--vscode-font-family); background: var(--bg); color: var(--text); padding: 24px; }
+    .header { display: flex; align-items: center; gap: 24px; margin-bottom: 24px; }
+    .grade { font-size: 72px; font-weight: 700; color: ${gradeColor}; }
+    .score { font-size: 18px; color: var(--text); }
+    .summary { margin-bottom: 24px; padding: 16px; background: var(--vscode-textCodeBlock-background); border-radius: 8px; }
+    .factors { display: grid; gap: 16px; }
+    .factor { padding: 16px; background: var(--vscode-sideBar-background); border-radius: 8px; }
+    .factor-name { font-weight: 600; margin-bottom: 8px; }
+    .factor-bar { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+    .factor-fill { height: 100%; background: ${gradeColor}; transition: width 0.3s; }
+    .suggestions { margin-top: 24px; }
+    .suggestion { padding: 8px 0; border-bottom: 1px solid var(--border); }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="grade">${result.grade}</div>
+    <div>
+      <div class="score">Tech Debt Score: ${result.overallScore}/100</div>
+      <div style="color: var(--vscode-descriptionForeground);">Lower is better</div>
+    </div>
+  </div>
+  
+  <div class="summary">${result.summary}</div>
+  
+  <h3>Factors</h3>
+  <div class="factors">
+    ${result.factors.map(f => `
+      <div class="factor">
+        <div class="factor-name">${f.name}</div>
+        <div class="factor-bar"><div class="factor-fill" style="width: ${f.score}%"></div></div>
+        <div style="font-size: 12px; margin-top: 4px; color: var(--vscode-descriptionForeground);">${f.description}</div>
+      </div>
+    `).join('')}
+  </div>
+  
+  <div class="suggestions">
+    <h3>Suggestions</h3>
+    ${result.suggestions.map(s => `<div class="suggestion">${s}</div>`).join('')}
+  </div>
+</body>
+</html>`;
+          
+        } catch (error) {
+          vscode.window.showErrorMessage(`Tech debt analysis failed: ${error}`);
+        }
+      });
+    }
+  );
+
+  // Register Generate Commit command
+  const generateCommitCommand = vscode.commands.registerCommand(
+    'codeDetective.generateCommit',
+    async () => {
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      
+      if (!workspaceFolder) {
+        vscode.window.showErrorMessage('Not in a workspace');
+        return;
+      }
+
+      const config = vscode.workspace.getConfiguration('codeDetective');
+      const apiKey = config.get<string>('geminiApiKey') || process.env.GEMINI_API_KEY;
+
+      if (!apiKey) {
+        vscode.window.showErrorMessage('Gemini API key required');
+        return;
+      }
+
+      await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: 'Analyzing staged changes...',
+        cancellable: false
+      }, async (progress) => {
+        try {
+          const { CommitAgent } = await import('../agents/commitAgent');
+          const agent = new CommitAgent(workspaceFolder.uri.fsPath, apiKey);
+          
+          const changes = await agent.getStagedChanges();
+          
+          if (changes.files.length === 0) {
+            vscode.window.showWarningMessage('No staged changes found. Stage some changes first.');
+            return;
+          }
+
+          progress.report({ message: 'Generating commit messages...' });
+          const suggestions = await agent.generateCommitMessage(changes);
+          
+          // Show quick pick with suggestions
+          const items = suggestions.map(s => ({
+            label: `$(${s.type === 'feat' ? 'add' : s.type === 'fix' ? 'wrench' : 'edit'}) ${s.message}`,
+            description: `${s.confidence}% confidence`,
+            detail: s.body || undefined,
+            suggestion: s
+          }));
+          
+          const selected = await vscode.window.showQuickPick(items, {
+            placeHolder: `Select a commit message (${changes.files.length} files, +${changes.additions} -${changes.deletions})`,
+            matchOnDescription: true,
+            matchOnDetail: true
+          });
+          
+          if (selected) {
+            // Copy to clipboard
+            const message = agent.formatCommitMessage(selected.suggestion);
+            await vscode.env.clipboard.writeText(message);
+            
+            const action = await vscode.window.showInformationMessage(
+              `Commit message copied! "${selected.suggestion.message}"`,
+              'Open Source Control',
+              'Commit Now'
+            );
+            
+            if (action === 'Open Source Control') {
+              vscode.commands.executeCommand('workbench.view.scm');
+            } else if (action === 'Commit Now') {
+              // Use VS Code's git extension to commit
+              vscode.commands.executeCommand('git.commit');
+            }
+          }
+          
+        } catch (error) {
+          vscode.window.showErrorMessage(`Commit generation failed: ${error}`);
+        }
+      });
+    }
+  );
+
+  // Register Who Knows What command
+  const whoKnowsWhatCommand = vscode.commands.registerCommand(
+    'codeDetective.whoKnowsWhat',
+    async () => {
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      
+      if (!workspaceFolder) {
+        vscode.window.showErrorMessage('Not in a workspace');
+        return;
+      }
+
+      await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: 'Building Expertise Map...',
+        cancellable: false
+      }, async () => {
+        try {
+          const { ExpertMapAgent } = await import('../agents/expertMapAgent');
+          const agent = new ExpertMapAgent(workspaceFolder.uri.fsPath);
+          const data = await agent.buildExpertiseMap();
+          const html = agent.generateHTML(data);
+          
+          const panel = vscode.window.createWebviewPanel(
+            'whoKnowsWhat',
+            'Who Knows What',
+            vscode.ViewColumn.Beside,
+            {}
+          );
+          panel.webview.html = html;
+          
+        } catch (error) {
+          vscode.window.showErrorMessage(`Failed to build expertise map: ${error}`);
+        }
+      });
+    }
+  );
+
+  // Register Onboarding Docs command
+  const onboardingCommand = vscode.commands.registerCommand(
+    'codeDetective.onboarding',
+    async () => {
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      
+      if (!workspaceFolder) {
+        vscode.window.showErrorMessage('Not in a workspace');
+        return;
+      }
+
+      const config = vscode.workspace.getConfiguration('codeDetective');
+      const apiKey = config.get<string>('geminiApiKey') || process.env.GEMINI_API_KEY;
+
+      if (!apiKey) {
+        vscode.window.showErrorMessage('Gemini API key required');
+        return;
+      }
+
+      // Let user pick a folder
+      const folders = await vscode.window.showOpenDialog({
+        canSelectFolders: true,
+        canSelectFiles: false,
+        canSelectMany: false,
+        defaultUri: workspaceFolder.uri,
+        openLabel: 'Generate Onboarding Docs'
+      });
+
+      if (!folders || folders.length === 0) {
+        return;
+      }
+
+      const targetPath = path.relative(workspaceFolder.uri.fsPath, folders[0].fsPath);
+
+      await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: 'Generating Onboarding Docs...',
+        cancellable: false
+      }, async () => {
+        try {
+          const { OnboardingAgent } = await import('../agents/onboardingAgent');
+          const agent = new OnboardingAgent(workspaceFolder.uri.fsPath, apiKey);
+          const docs = await agent.generateDocs(targetPath || '.');
+          const html = agent.generateHTML(docs);
+          
+          const panel = vscode.window.createWebviewPanel(
+            'onboarding',
+            `Onboarding: ${docs.title}`,
+            vscode.ViewColumn.Beside,
+            {}
+          );
+          panel.webview.html = html;
+          
+          // Offer to export
+          const action = await vscode.window.showInformationMessage(
+            'Onboarding docs generated!',
+            'Export to Markdown'
+          );
+          
+          if (action === 'Export to Markdown') {
+            const markdown = agent.exportMarkdown(docs);
+            const uri = await vscode.window.showSaveDialog({
+              defaultUri: vscode.Uri.file(path.join(workspaceFolder.uri.fsPath, 'ONBOARDING.md')),
+              filters: { 'Markdown': ['md'] }
+            });
+            if (uri) {
+              fs.writeFileSync(uri.fsPath, markdown);
+              vscode.window.showInformationMessage(`Saved to ${uri.fsPath}`);
+            }
+          }
+          
+        } catch (error) {
+          vscode.window.showErrorMessage(`Failed to generate docs: ${error}`);
+        }
+      });
+    }
+  );
+
+  // Register Export to Markdown command
+  const exportMarkdownCommand = vscode.commands.registerCommand(
+    'codeDetective.exportMarkdown',
+    async () => {
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      
+      if (!workspaceFolder) {
+        vscode.window.showErrorMessage('Not in a workspace');
+        return;
+      }
+
+      // Check if there's a last investigation result stored
+      const lastInvestigation = (global as any).lastInvestigationResult;
+      
+      if (!lastInvestigation) {
+        vscode.window.showWarningMessage('No investigation to export. Run an investigation first.');
+        return;
+      }
+
+      const markdown = `# Code Investigation Report
+
+## File
+\`${lastInvestigation.file || 'Unknown'}\`
+
+## Date
+${new Date().toLocaleDateString()}
+
+## Selected Code
+\`\`\`
+${lastInvestigation.code || 'N/A'}
+\`\`\`
+
+## Why Does This Code Exist?
+${lastInvestigation.explanation || lastInvestigation.content || 'No explanation available'}
+
+${lastInvestigation.commits ? `## Related Commits\n${lastInvestigation.commits.map((c: any) => `- ${c.hash?.substring(0, 7)} ${c.message}`).join('\n')}` : ''}
+
+${lastInvestigation.confidence ? `## Confidence: ${lastInvestigation.confidence}%` : ''}
+
+---
+*Generated by Code Detective*
+`;
+
+      const uri = await vscode.window.showSaveDialog({
+        defaultUri: vscode.Uri.file(path.join(workspaceFolder.uri.fsPath, 'investigation-report.md')),
+        filters: { 'Markdown': ['md'] }
+      });
+
+      if (uri) {
+        fs.writeFileSync(uri.fsPath, markdown);
+        vscode.window.showInformationMessage(`Exported to ${uri.fsPath}`);
+        
+        // Open the file
+        const doc = await vscode.workspace.openTextDocument(uri);
+        await vscode.window.showTextDocument(doc);
       }
     }
   );
@@ -602,7 +1185,13 @@ export function activate(context: vscode.ExtensionContext) {
     deepDiveCommand,
     resolveConflictsCommand,
     watchModeCommand,
-    blameCommand
+    blameCommand,
+    timelineCommand,
+    techDebtCommand,
+    generateCommitCommand,
+    whoKnowsWhatCommand,
+    onboardingCommand,
+    exportMarkdownCommand
   );
 }
 
@@ -625,7 +1214,7 @@ async function startInvestigation(
   selection: vscode.Selection
 ): Promise<void> {
   // Get configuration
-  const config = vscode.workspace.getConfiguration('repoArchaeologist');
+  const config = vscode.workspace.getConfiguration('codeDetective');
   const geminiApiKey = config.get<string>('geminiApiKey') || process.env.GEMINI_API_KEY;
   const githubToken = config.get<string>('githubToken') || process.env.GITHUB_TOKEN;
   const thinkingLevel = config.get<string>('thinkingLevel') || 'high';
@@ -638,7 +1227,7 @@ async function startInvestigation(
     if (action === 'Open Settings') {
       vscode.commands.executeCommand(
         'workbench.action.openSettings',
-        'repoArchaeologist.geminiApiKey'
+        'codeDetective.geminiApiKey'
       );
     }
     return;
@@ -656,7 +1245,7 @@ async function startInvestigation(
     investigationPanel.reveal(vscode.ViewColumn.Beside);
   } else {
     investigationPanel = vscode.window.createWebviewPanel(
-      'repoArchaeologist',
+      'codeDetective',
       'Code Investigation',
       vscode.ViewColumn.Beside,
       {
@@ -724,6 +1313,9 @@ async function startInvestigation(
       });
     }
 
+    // Add to history
+    addToHistory(result, relativePath, selection.start.line + 1, selection.end.line + 1);
+
     // Handle export requests from webview
     investigationPanel?.webview.onDidReceiveMessage(async (message) => {
       if (message.type === 'export') {
@@ -765,347 +1357,243 @@ function getWebviewContent(
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; font-src https://fonts.googleapis.com https://fonts.gstatic.com; script-src 'nonce-${nonce}';">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <title>Code Investigation</title>
   <style>
-    :root {
-      --noir-bg: #0a0a0f;
-      --noir-panel: #12121a;
-      --noir-card: #1a1a24;
-      --noir-card-hover: #22222e;
-      --noir-border: #2a2a36;
-      --noir-text: #e8e6e3;
-      --noir-text-secondary: #9a9a9a;
-      --noir-muted: #5a5a5a;
-      --noir-red: #c9302c;
-      --noir-red-glow: #ff4444;
-      --noir-amber: #d4a017;
-      --noir-amber-glow: #ffc107;
-      --noir-green: #2e7d32;
-    }
-    
     * { box-sizing: border-box; margin: 0; padding: 0; }
     
     body {
-      font-family: 'JetBrains Mono', monospace;
-      background: var(--noir-bg);
-      color: var(--noir-text);
-      padding: 24px;
+      font-family: var(--vscode-font-family);
+      background: var(--vscode-editor-background);
+      color: var(--vscode-foreground);
+      padding: 20px;
       min-height: 100vh;
-      line-height: 1.6;
+      line-height: 1.5;
     }
     
     .header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-bottom: 24px;
-      padding-bottom: 20px;
-      border-bottom: 1px solid var(--noir-border);
-    }
-    
-    .header-left {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-    }
-    
-    .logo {
-      width: 48px;
-      height: 48px;
-      background: linear-gradient(135deg, var(--noir-red), var(--noir-amber));
-      border-radius: 10px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 24px;
-      box-shadow: 0 4px 20px rgba(212, 160, 23, 0.2);
+      margin-bottom: 20px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid var(--vscode-panel-border);
     }
     
     .header h1 {
-      font-family: 'Playfair Display', serif;
-      font-size: 24px;
-      font-weight: 700;
-      color: var(--noir-text);
-      letter-spacing: 0.5px;
-    }
-    
-    .header-subtitle {
-      font-size: 11px;
-      color: var(--noir-amber);
-      text-transform: uppercase;
-      letter-spacing: 2px;
-      margin-top: 4px;
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--vscode-foreground);
     }
     
     .badge {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      padding: 6px 14px;
-      border-radius: 20px;
+      gap: 4px;
+      padding: 4px 10px;
+      border-radius: 12px;
       font-size: 11px;
       font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 1px;
     }
     
     .badge-thinking {
-      background: var(--noir-red);
-      color: white;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
       animation: pulse 1.5s infinite;
-      box-shadow: 0 0 20px rgba(201, 48, 44, 0.4);
     }
     
     @keyframes pulse {
-      0%, 100% { opacity: 1; box-shadow: 0 0 20px rgba(201, 48, 44, 0.4); }
-      50% { opacity: 0.8; box-shadow: 0 0 30px rgba(201, 48, 44, 0.6); }
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.7; }
     }
     
     .badge-confidence {
-      background: var(--noir-green);
-      color: white;
+      background: var(--vscode-testing-iconPassed);
+      color: #000;
     }
-    .badge-confidence.medium { background: var(--noir-amber); color: #000; }
-    .badge-confidence.low { background: var(--noir-red); }
+    .badge-confidence.medium { background: var(--vscode-editorWarning-foreground); }
+    .badge-confidence.low { background: var(--vscode-editorError-foreground); color: white; }
     
     .file-path {
       display: inline-block;
-      background: var(--noir-card);
-      border: 1px solid var(--noir-border);
-      padding: 8px 14px;
-      border-radius: 6px;
+      background: var(--vscode-textBlockQuote-background);
+      border: 1px solid var(--vscode-panel-border);
+      padding: 6px 12px;
+      border-radius: 4px;
       font-size: 12px;
-      color: var(--noir-amber);
-      margin-bottom: 20px;
+      color: var(--vscode-textLink-foreground);
+      margin-bottom: 16px;
     }
     
     .code-block {
-      background: var(--noir-panel);
-      border: 1px solid var(--noir-border);
-      border-radius: 8px;
-      padding: 20px;
-      margin-bottom: 24px;
+      background: var(--vscode-textBlockQuote-background);
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      padding: 16px;
+      margin-bottom: 20px;
       overflow-x: auto;
-      position: relative;
-    }
-    
-    .code-block::before {
-      content: 'EVIDENCE';
-      position: absolute;
-      top: -10px;
-      left: 16px;
-      background: var(--noir-bg);
-      padding: 0 8px;
-      font-size: 9px;
-      letter-spacing: 2px;
-      color: var(--noir-red);
     }
     
     .code-block pre {
-      font-family: 'JetBrains Mono', monospace;
+      font-family: var(--vscode-editor-font-family);
       font-size: 13px;
-      line-height: 1.6;
-      color: var(--noir-text);
+      line-height: 1.5;
+      color: var(--vscode-foreground);
     }
     
-    .progress-container { margin-bottom: 24px; }
+    .progress-container { margin-bottom: 20px; }
     
     .progress-bar {
-      height: 3px;
-      background: var(--noir-border);
+      height: 4px;
+      background: var(--vscode-progressBar-background);
       border-radius: 2px;
       overflow: hidden;
     }
     
     .progress-fill {
       height: 100%;
-      background: linear-gradient(90deg, var(--noir-red), var(--noir-amber));
+      background: var(--vscode-button-background);
       transition: width 0.3s ease;
-      box-shadow: 0 0 10px var(--noir-amber);
     }
     
     .status-text {
       font-size: 12px;
-      color: var(--noir-text-secondary);
-      margin-top: 10px;
+      color: var(--vscode-descriptionForeground);
+      margin-top: 8px;
       display: flex;
       align-items: center;
-      gap: 10px;
-      font-style: italic;
+      gap: 8px;
     }
     
     .section {
-      background: var(--noir-card);
-      border: 1px solid var(--noir-border);
-      border-radius: 10px;
-      padding: 24px;
-      margin-bottom: 20px;
-      position: relative;
-    }
-    
-    .section::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: 24px;
-      right: 24px;
-      height: 1px;
-      background: linear-gradient(90deg, transparent, var(--noir-amber), transparent);
-      opacity: 0.3;
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      padding: 16px;
+      margin-bottom: 16px;
     }
     
     .section h2 {
-      font-size: 10px;
+      font-size: 11px;
       text-transform: uppercase;
-      letter-spacing: 2px;
-      color: var(--noir-muted);
-      margin-bottom: 16px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    
-    .section h2::after {
-      content: '';
-      flex: 1;
-      height: 1px;
-      background: var(--noir-border);
+      letter-spacing: 1px;
+      color: var(--vscode-descriptionForeground);
+      margin-bottom: 12px;
     }
     
     .timeline {
       position: relative;
-      padding-left: 30px;
+      padding-left: 24px;
     }
     
     .timeline::before {
       content: '';
       position: absolute;
-      left: 10px;
+      left: 8px;
       top: 0;
       bottom: 0;
       width: 2px;
-      background: linear-gradient(to bottom, var(--noir-red), var(--noir-amber));
+      background: var(--vscode-button-background);
     }
     
     .timeline-item {
       position: relative;
-      margin-bottom: 20px;
-      padding-left: 20px;
+      margin-bottom: 16px;
+      padding-left: 16px;
     }
     
     .timeline-item::before {
       content: '';
       position: absolute;
-      left: -24px;
+      left: -20px;
       top: 6px;
-      width: 12px;
-      height: 12px;
+      width: 10px;
+      height: 10px;
       border-radius: 50%;
-      background: var(--noir-red);
-      border: 3px solid var(--noir-bg);
-      box-shadow: 0 0 10px rgba(201, 48, 44, 0.5);
+      background: var(--vscode-button-background);
+      border: 2px solid var(--vscode-editor-background);
     }
     
-    .timeline-item.fix::before { background: var(--noir-green); box-shadow: 0 0 10px rgba(46, 125, 50, 0.5); }
-    .timeline-item.warning::before { background: var(--noir-amber); box-shadow: 0 0 10px rgba(212, 160, 23, 0.5); }
-    
     .timeline-date {
-      font-size: 10px;
-      color: var(--noir-muted);
-      letter-spacing: 1px;
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
     }
     
     .timeline-title {
       font-weight: 500;
       margin: 4px 0;
-      font-size: 14px;
     }
     
     .timeline-author {
       font-size: 12px;
-      color: var(--noir-amber);
+      color: var(--vscode-textLink-foreground);
     }
     
     .narrative {
-      line-height: 1.8;
+      line-height: 1.7;
       white-space: pre-wrap;
-      font-size: 14px;
     }
     
     .sources-list { list-style: none; }
     
     .sources-list li {
-      padding: 14px 18px;
-      background: var(--noir-panel);
-      border: 1px solid var(--noir-border);
-      border-left: 3px solid var(--noir-amber);
-      border-radius: 6px;
-      margin-bottom: 10px;
+      padding: 10px 14px;
+      background: var(--vscode-sideBar-background);
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 4px;
+      margin-bottom: 8px;
       font-size: 13px;
-      transition: all 0.2s;
     }
     
-    .sources-list li:hover {
-      border-left-color: var(--noir-red);
-      background: var(--noir-card-hover);
-    }
-    
-    .sources-list a { color: var(--noir-amber); text-decoration: none; }
+    .sources-list a { color: var(--vscode-textLink-foreground); text-decoration: none; }
     .sources-list a:hover { text-decoration: underline; }
     
     .recommendation {
       display: flex;
       align-items: flex-start;
-      gap: 16px;
-      padding: 18px;
-      background: var(--noir-panel);
-      border: 1px solid var(--noir-border);
-      border-radius: 8px;
-      margin-bottom: 12px;
+      gap: 12px;
+      padding: 12px;
+      background: var(--vscode-sideBar-background);
+      border: 1px solid var(--vscode-panel-border);
+      border-radius: 6px;
+      margin-bottom: 8px;
     }
     
     .recommendation-action {
       font-weight: 600;
       text-transform: uppercase;
       font-size: 10px;
-      padding: 6px 12px;
+      padding: 4px 8px;
       border-radius: 4px;
-      letter-spacing: 1px;
     }
     
-    .recommendation-action.keep { background: var(--noir-green); color: white; }
-    .recommendation-action.document { background: var(--noir-amber); color: #000; }
-    .recommendation-action.refactor { background: var(--noir-amber); color: #000; }
-    .recommendation-action.remove { background: var(--noir-red); color: white; }
+    .recommendation-action.keep { background: var(--vscode-testing-iconPassed); color: #000; }
+    .recommendation-action.document { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+    .recommendation-action.refactor { background: var(--vscode-editorWarning-foreground); color: #000; }
+    .recommendation-action.remove { background: var(--vscode-editorError-foreground); color: white; }
     
     .export-btn {
-      background: linear-gradient(135deg, var(--noir-red), #8b1a1a);
-      color: white;
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
       border: none;
-      padding: 12px 24px;
-      border-radius: 6px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 12px;
-      font-weight: 600;
-      letter-spacing: 1px;
+      padding: 10px 20px;
+      border-radius: 4px;
+      font-family: var(--vscode-font-family);
+      font-size: 13px;
+      font-weight: 500;
       cursor: pointer;
-      transition: all 0.2s;
-      text-transform: uppercase;
+      transition: background 0.15s;
     }
     
     .export-btn:hover {
-      box-shadow: 0 0 20px rgba(201, 48, 44, 0.4);
-      transform: translateY(-1px);
+      background: var(--vscode-button-hoverBackground);
     }
     
     .loading-spinner {
-      width: 24px;
-      height: 24px;
-      border: 2px solid var(--noir-border);
-      border-top-color: var(--noir-red);
+      width: 20px;
+      height: 20px;
+      border: 2px solid var(--vscode-panel-border);
+      border-top-color: var(--vscode-button-background);
       border-radius: 50%;
       animation: spin 1s linear infinite;
     }
@@ -1113,10 +1601,10 @@ function getWebviewContent(
     @keyframes spin { to { transform: rotate(360deg); } }
     
     .error-message {
-      background: rgba(201, 48, 44, 0.15);
-      border: 1px solid var(--noir-red);
-      border-radius: 8px;
-      padding: 16px;
+      background: rgba(255, 0, 0, 0.1);
+      border: 1px solid var(--vscode-editorError-foreground);
+      border-radius: 6px;
+      padding: 12px;
       color: var(--vscode-editorError-foreground);
     }
     
@@ -1126,7 +1614,7 @@ function getWebviewContent(
       color: var(--vscode-descriptionForeground);
       padding: 12px;
       background: var(--vscode-textBlockQuote-background);
-      border-radius: 6px;
+      border-radius: 4px;
       overflow-x: auto;
     }
   </style>
@@ -1134,7 +1622,7 @@ function getWebviewContent(
 <body>
   <div id="app">
     <div class="header">
-      <h1>The Repo Archaeologist</h1>
+      <h1>Code Detective</h1>
       <span class="badge badge-thinking" id="thinking-badge" style="display: none;">
         Thinking: HIGH
       </span>
