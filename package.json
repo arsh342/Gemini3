@@ -4,7 +4,11 @@
   "icon": "images/icon.png",
   "description": "Git blame tells you WHO. We tell you WHY. An AI-powered code archaeology tool using Gemini 3.",
   "version": "0.1.0",
-  "publisher": "code-detective",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arsh342/Gemini3"
+  },
+  "publisher": "thunderBird",
   "engines": {
     "vscode": "^1.85.0"
   },
