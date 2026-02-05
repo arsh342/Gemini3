@@ -1,0 +1,16 @@
+.vscode/**
+.vscode-test/**
+src/**
+.gitignore
+.env
+.env.example
+tsconfig.json
+**/*.map
+.agent/**
+*.vsix
+PLAN.md
+DEPLOY.md
+**/*.ts
+!dist/**
+node_modules/**/devDependencies/**
+.DS_Store
