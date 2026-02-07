@@ -3,7 +3,7 @@
   "displayName": "Code Detective",
   "icon": "images/icon.png",
   "description": "Git blame tells you WHO. We tell you WHY. An AI-powered code archaeology tool using Gemini 3.",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "repository": {
     "type": "git",
     "url": "https://github.com/arsh342/Gemini3"
@@ -32,11 +32,13 @@
         {
           "id": "codeDetective.actions",
           "name": "Actions",
-          "type": "webview"
+          "type": "webview",
+          "icon": "images/icon.png"
         },
         {
           "id": "codeDetective.history",
-          "name": "Investigation History"
+          "name": "Investigation History",
+          "icon": "images/icon.png"
         }
       ]
     },
